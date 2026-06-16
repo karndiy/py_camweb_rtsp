@@ -1,0 +1,19 @@
+[Unit]
+Description=Arducam 64MP Web Controller
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+Group=pi
+WorkingDirectory=/home/pi/py
+ExecStart=/usr/bin/python3 /home/pi/py/camweb.py
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=camweb
+
+[Install]
+WantedBy=multi-user.target

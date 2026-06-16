@@ -1,0 +1,16 @@
+{
+  "autostart": true,
+  "resolution": "2160p",
+  "fps": "10",
+  "bitrate": "4000",
+  "show_preview": true,
+  "auto_reconnect": true,
+  "show_overlay": false,
+  "zoom_level": 6.0,
+  "af_mode": "continuous",
+  "lens_position": 7.1,
+  "flip": false,
+  "mirror": false,
+  "camera_index": 1,
+  "saved_relays": []
+}
