@@ -24,7 +24,7 @@ from datetime import datetime
 from PIL import Image, ImageDraw, ImageFont
 
 try:
-    from flask import Flask, Response, request, jsonify, send_from_directory
+    from flask import Flask, Response, request, jsonify, send_from_directory, render_template
 except ImportError:
     print("Run first:  pip3 install flask pillow")
     raise SystemExit(1)
@@ -34,8 +34,9 @@ except ImportError:
 # ─────────────────────────────────────────────────────────────────────────────
 _BASE       = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(_BASE, "camtest_config.json")   # shared with camtest5.py
-LOG_PATH    = os.path.join(_BASE, "cam_events.log")
-SNAP_DIR    = _BASE
+LOG_PATH      = os.path.join(_BASE, "cam_events.log")
+HW_STATS_PATH = os.path.join(_BASE, "hardware_stats.json")
+SNAP_DIR      = _BASE
 
 RTSP_RES_MAP = {
     "720p":  (1280,  720),
@@ -58,6 +59,28 @@ SOI = b'\xff\xd8'
 EOI = b'\xff\xd9'
 
 WEB_PORT = 5000
+
+CONFIG_DEFAULTS = {
+    "autostart":        False,
+    "resolution":       "720p",
+    "fps":              "30",
+    "bitrate":          "2000",
+    "show_preview":     True,
+    "auto_reconnect":   True,
+    "show_overlay":     True,
+    "zoom_level":       1.0,
+    "af_mode":          "continuous",
+    "lens_position":    0.0,
+    "flip":             False,
+    "mirror":           False,
+    "camera_index":     0,
+    "saved_relays":     [],
+    "last_relay_url":   "",
+    "hw_poll_interval": 10,
+    "hw_cpu_warn":      80,
+    "hw_ram_warn":      85,
+    "hw_temp_warn":     75,
+}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -92,6 +115,131 @@ class CamLog:
 
 
 cam_log = CamLog()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  HARDWARE MONITOR  (CPU, RAM, tasks, temperature)
+# ─────────────────────────────────────────────────────────────────────────────
+class HardwareMonitor:
+    def __init__(self, get_config=None):
+        self._get_config = get_config   # callable → config dict, or None
+        self._lock       = threading.Lock()
+        self._stats      = {}
+        self._stop_evt   = threading.Event()
+        self._prev_cpu   = None
+        self._poll_count = 0
+        self._thread     = threading.Thread(target=self._run, daemon=True, name="hw-monitor")
+        self._thread.start()
+        cam_log.info("Hardware monitor started")
+
+    def _cfg(self, key):
+        if self._get_config:
+            return self._get_config().get(key, CONFIG_DEFAULTS.get(key))
+        return CONFIG_DEFAULTS.get(key)
+
+    def _read_cpu_fields(self):
+        with open("/proc/stat") as f:
+            line = f.readline()
+        return list(map(int, line.split()[1:8]))  # user nice sys idle iowait irq softirq
+
+    def _cpu_percent(self):
+        curr = self._read_cpu_fields()
+        if self._prev_cpu is None:
+            time.sleep(0.5)
+            curr = self._read_cpu_fields()
+            self._prev_cpu = curr
+            return 0.0
+        prev = self._prev_cpu
+        self._prev_cpu = curr
+        idle  = curr[3] - prev[3]
+        total = sum(curr) - sum(prev)
+        return round(100.0 * (1.0 - idle / total), 1) if total else 0.0
+
+    def _ram_stats(self):
+        info = {}
+        with open("/proc/meminfo") as f:
+            for line in f:
+                k, v = line.split(":", 1)
+                info[k.strip()] = int(v.split()[0])  # kB
+        total = info.get("MemTotal", 0)
+        avail = info.get("MemAvailable", 0)
+        used  = total - avail
+        pct   = round(100.0 * used / total, 1) if total else 0.0
+        return {"total_mb": round(total / 1024, 1),
+                "used_mb":  round(used  / 1024, 1),
+                "percent":  pct}
+
+    def _task_count(self):
+        with open("/proc/loadavg") as f:
+            parts = f.read().split()
+        running, total = parts[3].split("/")
+        return {"running": int(running), "total": int(total)}
+
+    def _temperature(self):
+        try:
+            with open("/sys/class/thermal/thermal_zone0/temp") as f:
+                return round(int(f.read().strip()) / 1000.0, 1)
+        except Exception:
+            return None
+
+    def _run(self):
+        while not self._stop_evt.is_set():
+            try:
+                cpu   = self._cpu_percent()
+                ram   = self._ram_stats()
+                tasks = self._task_count()
+                temp  = self._temperature()
+
+                stats = {
+                    "timestamp":     datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    "cpu_percent":   cpu,
+                    "ram":           ram,
+                    "tasks":         tasks,
+                    "temperature_c": temp,
+                }
+                with self._lock:
+                    self._stats = stats
+
+                try:
+                    with open(HW_STATS_PATH, "w") as f:
+                        json.dump(stats, f, indent=2)
+                except Exception as ex:
+                    cam_log.error(f"HW stats save failed: {ex}")
+
+                self._poll_count += 1
+                # Write to log file every minute (every 6 × 10s polls)
+                if self._poll_count % 6 == 0:
+                    cam_log._log.info(
+                        f"HW cpu={cpu}% ram={ram['percent']}%"
+                        f" ({ram['used_mb']:.0f}/{ram['total_mb']:.0f}MB)"
+                        f" temp={temp}°C tasks={tasks['total']}"
+                    )
+
+                cpu_warn  = self._cfg("hw_cpu_warn")
+                ram_warn  = self._cfg("hw_ram_warn")
+                temp_warn = self._cfg("hw_temp_warn")
+                if cpu > cpu_warn:
+                    cam_log.warn(f"High CPU: {cpu}%  (warn>{cpu_warn}%)")
+                if ram["percent"] > ram_warn:
+                    cam_log.warn(f"High RAM: {ram['percent']}%  ({ram['used_mb']:.0f}/{ram['total_mb']:.0f} MB)")
+                if temp is not None and temp > temp_warn:
+                    cam_log.warn(f"High temp: {temp}°C  (warn>{temp_warn}°C)")
+
+            except Exception as ex:
+                cam_log.error(f"HW monitor error: {ex}")
+
+            self._stop_evt.wait(self._cfg("hw_poll_interval") or 10)
+
+    def get_stats(self):
+        with self._lock:
+            return dict(self._stats)
+
+    def stop(self):
+        self._stop_evt.set()
+        cam_log.info("Hardware monitor stopped")
+
+
+hw_monitor: "HardwareMonitor" = None   # set in main()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -458,6 +606,144 @@ class RtspBroadcaster:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+#  WEB TUNNEL  (expose the Flask web UI to the public internet, MVP)
+# ─────────────────────────────────────────────────────────────────────────────
+class TunnelManager:
+    """Reverse-tunnel the web UI for external access. Zero-install default: localhost.run."""
+
+    _PROVIDERS = {
+        "localhost.run": {
+            "cmd":    lambda p: ["ssh", "-o", "StrictHostKeyChecking=no",
+                                 "-o", "ServerAliveInterval=30",
+                                 "-o", "ExitOnForwardFailure=yes",
+                                 "-R", f"80:localhost:{p}", "nokey@localhost.run"],
+            "url_re": r"https://[a-z0-9]+\.lhrtunnel\.link",
+            "needs":  "ssh",
+        },
+        "cloudflared": {
+            "cmd":    lambda p: ["cloudflared", "tunnel", "--url", f"http://localhost:{p}"],
+            "url_re": r"https://[a-z0-9\-]+\.trycloudflare\.com",
+            "needs":  "cloudflared",
+        },
+        "bore": {
+            "cmd":    lambda p: ["bore", "local", str(p), "--to", "bore.pub"],
+            "url_re": r"bore\.pub:(\d+)",
+            "url_grp": lambda m: f"http://bore.pub:{m.group(1)}",
+            "needs":  "bore",
+        },
+        "ngrok": {
+            "cmd":    lambda p: ["ngrok", "http", str(p), "--log", "stdout", "--log-level", "info"],
+            "url_re": r"url=(https://[^\s]+\.ngrok[^\s]*)",
+            "url_grp": lambda m: m.group(1),
+            "needs":  "ngrok",
+        },
+    }
+
+    def __init__(self, port: int = WEB_PORT):
+        self._port     = port
+        self._proc     = None
+        self._lock     = threading.Lock()
+        self._url      = None
+        self._provider = None
+        self._state    = "stopped"   # stopped | starting | running | error
+        self._error    = None
+
+    @classmethod
+    def available_providers(cls) -> list:
+        return [name for name, cfg in cls._PROVIDERS.items()
+                if subprocess.run(["which", cfg["needs"]], capture_output=True).returncode == 0]
+
+    def start(self, provider: str = "localhost.run") -> dict:
+        with self._lock:
+            if self._state not in ("stopped", "error"):
+                return {"ok": False, "error": "Tunnel already running"}
+            cfg = self._PROVIDERS.get(provider)
+            if not cfg:
+                return {"ok": False, "error": f"Unknown provider: {provider}"}
+            if subprocess.run(["which", cfg["needs"]], capture_output=True).returncode != 0:
+                return {"ok": False, "error": f"'{cfg['needs']}' not installed"}
+            self._state    = "starting"
+            self._url      = None
+            self._error    = None
+            self._provider = provider
+
+        try:
+            proc = subprocess.Popen(
+                cfg["cmd"](self._port),
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True, bufsize=1,
+            )
+        except Exception as ex:
+            with self._lock:
+                self._state = "error"
+                self._error = str(ex)
+            return {"ok": False, "error": str(ex)}
+
+        with self._lock:
+            self._proc = proc
+
+        threading.Thread(
+            target=self._reader, args=(proc, cfg["url_re"], cfg.get("url_grp")),
+            daemon=True, name="tunnel-reader"
+        ).start()
+        cam_log.info(f"Tunnel starting via {provider}")
+        return {"ok": True}
+
+    def stop(self) -> dict:
+        with self._lock:
+            proc = self._proc
+            self._proc  = None
+            self._url   = None
+            self._state = "stopped"
+            self._error = None
+        if proc:
+            try:
+                proc.terminate()
+                proc.wait(timeout=5)
+            except Exception:
+                try: proc.kill()
+                except Exception: pass
+        cam_log.info("Tunnel stopped")
+        return {"ok": True}
+
+    def _reader(self, proc, url_re: str, url_grp):
+        import re
+        try:
+            for line in proc.stdout:
+                line = line.rstrip()
+                if line:
+                    cam_log.info(f"[tunnel] {line[:140]}")
+                m = re.search(url_re, line)
+                if m:
+                    url = url_grp(m) if url_grp else m.group(0)
+                    with self._lock:
+                        if self._proc is proc:
+                            self._url   = url
+                            self._state = "running"
+                    cam_log.info(f"Tunnel live: {url}")
+        except Exception:
+            pass
+        with self._lock:
+            if self._proc is proc:
+                self._state = "error"
+                self._error = "Tunnel process exited"
+                self._proc  = None
+        cam_log.warn(f"Tunnel [{self._provider}] exited")
+
+    def to_dict(self) -> dict:
+        with self._lock:
+            return {
+                "state":    self._state,
+                "url":      self._url,
+                "provider": self._provider,
+                "error":    self._error,
+            }
+
+
+tunnel_mgr: TunnelManager = None   # set in main()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 #  RTSP RELAY  (push to a remote RTSP server)
 #
 #  No local MediaMTX needed — FFmpeg connects directly to the target URL.
@@ -596,22 +882,8 @@ class CameraController:
 
     # ── config ────────────────────────────────────────────────────────────────
     def _load_config(self) -> dict:
-        defaults = {
-            "autostart":      False,
-            "resolution":     "720p",
-            "fps":            "30",
-            "bitrate":        "2000",
-            "show_preview":   True,
-            "auto_reconnect": True,
-            "show_overlay":   True,
-            "zoom_level":     1.0,
-            "af_mode":        "continuous",
-            "lens_position":  0.0,
-            "flip":           False,
-            "mirror":         False,
-            "camera_index":   0,
-            "saved_relays":   [],  # [{target_url, fps, bitrate, auto_reconnect}]
-        }
+        import copy
+        defaults = copy.deepcopy(CONFIG_DEFAULTS)
         try:
             with open(CONFIG_PATH) as f:
                 return {**defaults, **json.load(f)}
@@ -751,8 +1023,9 @@ class CameraController:
                 "bitrate":        bitrate_kbps,
                 "auto_reconnect": auto_reconnect,
             })
-            self.save_config()
             cam_log.info(f"Relay config auto-saved: {target_url}")
+        self._config["last_relay_url"] = target_url
+        self.save_config()
         return rid, relay.to_dict(), newly_saved
 
     def remove_relay(self, relay_id: str):
@@ -926,6 +1199,7 @@ class CameraController:
             "camera_name":   CAMERA_PROFILES.get(
                                  int(self._config.get("camera_index", 0)), {}
                              ).get("name", "Unknown"),
+            "tunnel":        tunnel_mgr.to_dict() if tunnel_mgr else None,
         }
 
     def shutdown(self):
@@ -940,8 +1214,10 @@ class CameraController:
 # ─────────────────────────────────────────────────────────────────────────────
 #  FLASK APPLICATION
 # ─────────────────────────────────────────────────────────────────────────────
-app  = Flask(__name__)
-ctrl: CameraController = None    # set in main()
+app        = Flask(__name__, template_folder="templates", static_folder="static")
+ctrl:       CameraController = None    # set in main()
+tunnel_mgr: TunnelManager    = None    # set in main()
+# hw_monitor declared at module level above; populated in main()
 
 # silence Flask's request logging
 log = logging.getLogger("werkzeug")
@@ -950,7 +1226,7 @@ log.setLevel(logging.ERROR)
 
 @app.route("/")
 def index():
-    return Response(HTML_TEMPLATE, mimetype="text/html")
+    return render_template("index.html")
 
 
 @app.route("/stream")
@@ -1095,698 +1371,83 @@ def api_camera():
     return jsonify(ctrl.set_camera(index))
 
 
+@app.route("/api/log/file")
+def api_log_file():
+    try:
+        with open(LOG_PATH, "r", encoding="utf-8") as f:
+            lines = f.readlines()
+        return jsonify({"ok": True, "lines": lines[-100:]})
+    except FileNotFoundError:
+        return jsonify({"ok": True, "lines": []})
+    except Exception as ex:
+        return jsonify({"ok": False, "error": str(ex)}), 500
+
+
+@app.route("/api/log/clear", methods=["POST"])
+def api_log_clear():
+    try:
+        open(LOG_PATH, "w").close()
+        with cam_log._lock:
+            cam_log._entries.clear()
+        cam_log.info("Log cleared")
+        return jsonify({"ok": True})
+    except Exception as ex:
+        return jsonify({"ok": False, "error": str(ex)}), 500
+
+
+@app.route("/api/hardware")
+def api_hardware():
+    return jsonify(hw_monitor.get_stats() if hw_monitor else {})
+
+
+@app.route("/api/config/defaults")
+def api_config_defaults():
+    import copy
+    d = copy.deepcopy(CONFIG_DEFAULTS)
+    d.pop("saved_relays", None)   # never wipe relay list via reset
+    return jsonify(d)
+
+
+@app.route("/api/config/reset", methods=["POST"])
+def api_config_reset():
+    import copy
+    d = copy.deepcopy(CONFIG_DEFAULTS)
+    d["saved_relays"] = ctrl._config.get("saved_relays", [])   # preserve relays
+    ctrl.save_config(d)
+    ctrl._start_preview()
+    cam_log.info("Config reset to defaults")
+    return jsonify({"ok": True, "config": ctrl._config})
+
+
+@app.route("/api/tunnel/start", methods=["POST"])
+def api_tunnel_start():
+    d        = request.get_json(silent=True) or {}
+    provider = d.get("provider", "localhost.run")
+    return jsonify(tunnel_mgr.start(provider))
+
+
+@app.route("/api/tunnel/stop", methods=["POST"])
+def api_tunnel_stop():
+    return jsonify(tunnel_mgr.stop())
+
+
+@app.route("/api/tunnel/providers")
+def api_tunnel_providers():
+    return jsonify({"providers": TunnelManager.available_providers()})
+
+
 @app.route("/snaps/<path:filename>")
 def serve_snap(filename):
     return send_from_directory(SNAP_DIR, filename)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  WEB UI  (inline HTML — no separate templates/ directory needed)
-# ─────────────────────────────────────────────────────────────────────────────
-HTML_TEMPLATE = r"""<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Arducam 64MP · Web Controller</title>
-<style>
-*{box-sizing:border-box;margin:0;padding:0}
-body{background:#0d0f14;color:#e8eaf0;font-family:'Courier New',monospace;font-size:13px;height:100vh;display:flex;flex-direction:column;overflow:hidden}
-header{background:#13161d;padding:0 20px;height:48px;display:flex;align-items:center;gap:16px;flex-shrink:0;border-bottom:1px solid #1e2230}
-header h1{color:#00e5b0;font-size:16px;letter-spacing:2px}
-header span{color:#5a6070;font-size:11px}
-#clock{margin-left:auto;color:#5a6070;font-size:11px}
-#main{display:flex;flex:1;overflow:hidden}
-#preview-wrap{flex:1;background:#000;position:relative;overflow:hidden;display:flex;align-items:center;justify-content:center}
-#stream-img{max-width:100%;max-height:100%;object-fit:contain;display:block}
-.badge{position:absolute;background:#000;padding:3px 8px;font-size:11px;border-radius:3px}
-#badge-tl{top:10px;left:10px;color:#00e5b0}
-#badge-tr{top:10px;right:10px;color:#5a6070}
-#badge-br{bottom:10px;right:10px;color:#5a6070}
-#sidebar{width:300px;background:#13161d;overflow-y:auto;flex-shrink:0;border-left:1px solid #1e2230;padding-bottom:16px}
-.section{padding:14px 16px 0}
-.sec-title{font-size:10px;font-weight:bold;color:#5a6070;letter-spacing:1.5px;margin-bottom:8px}
-.sep{height:1px;background:#1e2230;margin:12px 16px}
-.btn{display:block;width:100%;padding:10px;border:none;border-radius:4px;font-family:inherit;font-size:12px;font-weight:bold;cursor:pointer;letter-spacing:.5px;transition:filter .15s}
-.btn:hover{filter:brightness(1.15)}
-.btn:disabled{opacity:.4;cursor:not-allowed}
-.btn-rtsp-off{background:#1e2230;color:#5a6070}
-.btn-rtsp-on{background:#007a3d;color:#fff}
-.btn-blue{background:#0077ff;color:#fff}
-.btn-danger{background:#7a1a1a;color:#ffa0a0}
-.url-lbl{color:#00e5b0;font-size:11px;margin-top:6px;word-break:break-all;min-height:16px}
-.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:6px}
-label{color:#e8eaf0;font-size:12px}
-.lbl-sm{color:#5a6070;font-size:11px;margin-bottom:4px}
-input[type=text],input[type=number]{background:#19212e;border:1px solid #2a3248;color:#e8eaf0;padding:5px 8px;border-radius:3px;font-family:inherit;font-size:12px;width:100%}
-input[type=number]{width:80px}
-select{background:#19212e;border:1px solid #2a3248;color:#e8eaf0;padding:5px 8px;border-radius:3px;font-family:inherit;font-size:12px}
-.radio-group{display:flex;gap:6px;flex-wrap:wrap}
-.radio-group label{display:flex;align-items:center;gap:4px;cursor:pointer;padding:3px 7px;border-radius:3px;border:1px solid #2a3248;transition:border-color .15s}
-.radio-group label:hover{border-color:#00e5b0}
-.radio-group input[type=radio]{accent-color:#00e5b0}
-.stat-grid{display:grid;grid-template-columns:1fr 1fr;gap:4px 8px}
-.stat-item{background:#0d0f14;border-radius:3px;padding:6px 8px}
-.stat-val{font-size:15px;color:#00e5b0;font-weight:bold}
-.stat-key{font-size:10px;color:#5a6070;margin-top:1px}
-#log-box{background:#080a0e;padding:8px;border-radius:4px;margin-top:4px;height:150px;overflow-y:auto;font-size:10px;line-height:1.6}
-.log-INF{color:#5a6070}
-.log-WRN{color:#ff9800}
-.log-ERR{color:#ff3333}
-.relay-item{background:#0d0f14;border-radius:4px;padding:8px 10px;margin-bottom:6px;position:relative}
-.relay-url{color:#e8eaf0;font-size:11px;word-break:break-all}
-.relay-state{font-size:10px;margin-top:3px}
-.relay-state.live{color:#00e5b0}
-.relay-state.reconnecting{color:#ff9800}
-.relay-state.error{color:#ff3333}
-.relay-state.connecting{color:#5a6070}
-.relay-del{position:absolute;top:6px;right:8px;background:none;border:none;color:#5a6070;cursor:pointer;font-size:14px;line-height:1}
-.relay-del:hover{color:#ff3333}
-.snap-row{display:flex;gap:6px;align-items:center}
-.chip{padding:3px 8px;border-radius:3px;background:#19212e;border:1px solid #2a3248;color:#e8eaf0;font-family:inherit;font-size:11px;cursor:pointer}
-.chip.active,.chip:hover{background:#00e5b0;color:#000;border-color:#00e5b0}
-.viewers-badge{display:inline-block;background:#19212e;padding:2px 8px;border-radius:10px;font-size:10px;color:#5a6070;margin-left:6px}
-.zoom-btn{padding:4px 10px;background:#19212e;border:1px solid #2a3248;color:#e8eaf0;border-radius:3px;font-family:inherit;font-size:11px;cursor:pointer;transition:all .15s}
-.zoom-btn.active,.zoom-btn:hover{background:#00e5b0;color:#000;border-color:#00e5b0}
-.focus-btn{padding:4px 10px;background:#19212e;border:1px solid #2a3248;color:#e8eaf0;border-radius:3px;font-family:inherit;font-size:11px;cursor:pointer;transition:all .15s}
-.focus-btn.active{background:#0077ff;color:#fff;border-color:#0077ff}
-.focus-btn:hover{border-color:#0077ff}
-input[type=range]{width:100%;accent-color:#00e5b0;cursor:pointer;margin-top:4px}
-.slider-val{color:#00e5b0;font-size:12px;font-weight:bold}
-.toggle-btn{padding:6px 14px;background:#19212e;border:1px solid #2a3248;color:#e8eaf0;border-radius:3px;font-family:inherit;font-size:12px;font-weight:bold;cursor:pointer;letter-spacing:.5px;transition:all .15s;flex:1}
-.toggle-btn.active{background:#00e5b0;color:#000;border-color:#00e5b0}
-.toggle-btn:hover{border-color:#00e5b0}
-</style>
-</head>
-<body>
-<header>
-  <h1>ARDUCAM 64MP</h1>
-  <span>WEB CONTROLLER</span>
-  <span id="viewers-info" class="viewers-badge">0 viewers</span>
-  <span id="clock">--:--:--</span>
-</header>
-
-<div id="main">
-  <!-- ── MJPEG preview ── -->
-  <div id="preview-wrap">
-    <img id="stream-img" src="/stream" alt="stream"
-         onerror="setTimeout(()=>{this.src='/stream?t='+Date.now()},2000)">
-    <div class="badge" id="badge-tl">MJPEG  720×480</div>
-    <div class="badge" id="badge-tr"></div>
-    <div class="badge" id="badge-br"></div>
-  </div>
-
-  <!-- ── Sidebar ── -->
-  <aside id="sidebar">
-
-    <!-- Camera Source -->
-    <div class="section" style="padding-top:16px">
-      <div class="sec-title">CAMERA SOURCE</div>
-      <div style="display:flex;gap:6px">
-        <button class="toggle-btn active" id="cam-src-0" onclick="setCamera(0)">CAM 0  Arducam 64MP</button>
-        <button class="toggle-btn" id="cam-src-1" onclick="setCamera(1)">CAM 1  Module 3</button>
-      </div>
-      <div id="cam-name-lbl" style="color:#5a6070;font-size:10px;margin-top:4px"></div>
-    </div>
-
-    <div class="sep"></div>
-
-    <!-- Status stats -->
-    <div class="section">
-      <div class="sec-title">LIVE STATS</div>
-      <div class="stat-grid">
-        <div class="stat-item"><div class="stat-val" id="st-fps">—</div><div class="stat-key">FPS</div></div>
-        <div class="stat-item"><div class="stat-val" id="st-jpeg">—</div><div class="stat-key">JPEG kB</div></div>
-        <div class="stat-item"><div class="stat-val" id="st-res">—</div><div class="stat-key">Resolution</div></div>
-        <div class="stat-item"><div class="stat-val" id="st-tx">—</div><div class="stat-key">RTSP TX kbps</div></div>
-      </div>
-    </div>
-
-    <div class="sep"></div>
-
-    <!-- Local RTSP -->
-    <div class="section">
-      <div class="sec-title">LOCAL RTSP STREAM</div>
-      <button id="btn-rtsp" class="btn btn-rtsp-off" onclick="toggleRtsp()">◉  START RTSP</button>
-      <div class="url-lbl" id="rtsp-url"></div>
-
-      <div style="margin-top:12px">
-        <div class="lbl-sm">RESOLUTION</div>
-        <div class="radio-group" id="rg-res">
-          <label><input type="radio" name="res" value="720p" checked> 720p</label>
-          <label><input type="radio" name="res" value="1080p"> 1080p</label>
-          <label><input type="radio" name="res" value="2160p"> 2160p</label>
-        </div>
-      </div>
-      <div style="margin-top:8px">
-        <div class="lbl-sm">FPS</div>
-        <div class="radio-group" id="rg-fps">
-          <label><input type="radio" name="fps" value="5"> 5</label>
-          <label><input type="radio" name="fps" value="10"> 10</label>
-          <label><input type="radio" name="fps" value="15"> 15</label>
-          <label><input type="radio" name="fps" value="30" checked> 30</label>
-        </div>
-      </div>
-      <div class="row" style="margin-top:8px">
-        <div>
-          <div class="lbl-sm">BITRATE (kbps)</div>
-          <input type="number" id="inp-bitrate" value="2000" min="100" max="20000" style="width:90px">
-        </div>
-        <div>
-          <label style="display:flex;align-items:center;gap:6px;cursor:pointer;margin-top:16px">
-            <input type="checkbox" id="chk-reconnect" checked style="accent-color:#00e5b0">
-            Auto-reconnect
-          </label>
-        </div>
-      </div>
-    </div>
-
-    <div class="sep"></div>
-
-    <!-- RTSP Relay -->
-    <div class="section">
-      <div class="sec-title">RTSP RELAY  <span style="font-size:9px;font-weight:normal">(push to remote server)</span></div>
-
-      <div style="margin-bottom:6px">
-        <div class="lbl-sm">TARGET URL</div>
-        <input type="text" id="relay-url" placeholder="rtsp://192.168.1.100:554/live">
-      </div>
-      <div style="margin-bottom:6px">
-        <div class="lbl-sm">SAVED CONFIGS</div>
-        <select id="saved-relay-select" style="width:100%" onchange="loadSavedRelay(this.value)">
-          <option value="">— load saved —</option>
-        </select>
-      </div>
-      <div class="row">
-        <div>
-          <div class="lbl-sm">FPS</div>
-          <select id="relay-fps">
-            <option value="5">5</option>
-            <option value="10">10</option>
-            <option value="15">15</option>
-            <option value="30" selected>30</option>
-          </select>
-        </div>
-        <div>
-          <div class="lbl-sm">BITRATE (kbps)</div>
-          <input type="number" id="relay-bitrate" value="2000" min="100" max="20000" style="width:90px">
-        </div>
-        <label style="display:flex;align-items:center;gap:6px;cursor:pointer;align-self:flex-end;padding-bottom:2px">
-          <input type="checkbox" id="relay-reconnect" checked style="accent-color:#00e5b0">
-          Auto
-        </label>
-      </div>
-      <button class="btn btn-blue" style="margin-top:4px" onclick="addRelay()">+ ADD RELAY</button>
-      <div id="relay-save-status" style="color:#00e5b0;font-size:10px;min-height:14px;margin-top:4px"></div>
-
-      <div id="relay-list" style="margin-top:6px"></div>
-    </div>
-
-    <div class="sep"></div>
-
-    <!-- Snapshot -->
-    <div class="section">
-      <div class="sec-title">SNAPSHOT</div>
-      <div id="snap-status" style="display:flex;gap:6px;margin-bottom:8px;flex-wrap:wrap">
-        <span id="snap-zoom-pill" style="display:none;padding:2px 8px;border-radius:10px;background:#00e5b020;border:1px solid #00e5b0;color:#00e5b0;font-size:10px"></span>
-        <span id="snap-af-pill"   style="padding:2px 8px;border-radius:10px;background:#0077ff20;border:1px solid #0077ff;color:#a0c0ff;font-size:10px">AF:—</span>
-      </div>
-      <div class="snap-row">
-        <span class="chip active" id="snap-low"  onclick="setSnapLevel('low')">LOW 720p</span>
-        <span class="chip"        id="snap-mid"  onclick="setSnapLevel('mid')">MED 12MP</span>
-        <span class="chip"        id="snap-high" onclick="setSnapLevel('high')">HIGH 64MP</span>
-      </div>
-      <button class="btn btn-blue" style="margin-top:8px" id="btn-snap" onclick="takeSnapshot()">● CAPTURE</button>
-      <div id="snap-result" style="color:#00e5b0;font-size:11px;margin-top:4px;min-height:14px"></div>
-    </div>
-
-    <div class="sep"></div>
-
-    <!-- Digital Zoom -->
-    <div class="section">
-      <div class="sec-title">DIGITAL ZOOM  <span class="slider-val" id="zoom-badge">1.0×</span></div>
-      <div style="display:flex;flex-wrap:wrap;gap:4px;margin-bottom:8px" id="zoom-presets">
-        <button class="zoom-btn active" onclick="setZoom(1)">1×</button>
-        <button class="zoom-btn" onclick="setZoom(1.5)">1.5×</button>
-        <button class="zoom-btn" onclick="setZoom(2)">2×</button>
-        <button class="zoom-btn" onclick="setZoom(3)">3×</button>
-        <button class="zoom-btn" onclick="setZoom(4)">4×</button>
-        <button class="zoom-btn" onclick="setZoom(6)">6×</button>
-        <button class="zoom-btn" onclick="setZoom(8)">8×</button>
-      </div>
-      <div class="lbl-sm">FINE ADJUST  <span class="slider-val" id="zoom-slider-val">1.0×</span></div>
-      <input type="range" id="zoom-slider" min="10" max="160" value="10" step="1"
-             oninput="previewZoomSlider(this.value)" onchange="commitZoomSlider(this.value)">
-    </div>
-
-    <div class="sep"></div>
-
-    <!-- Autofocus -->
-    <div class="section">
-      <div class="sec-title">AUTOFOCUS</div>
-      <div style="display:flex;gap:4px;flex-wrap:wrap;margin-bottom:8px">
-        <button class="focus-btn active" id="af-continuous" onclick="setAfMode('continuous')">CONTINUOUS</button>
-        <button class="focus-btn" id="af-auto" onclick="setAfMode('auto')">AUTO</button>
-        <button class="focus-btn" id="af-manual" onclick="setAfMode('manual')">MANUAL</button>
-      </div>
-      <button class="btn btn-blue" id="btn-trigger-af" style="display:none;margin-bottom:8px" onclick="triggerAF()">⊙ TRIGGER AF</button>
-      <div id="lens-pos-wrap" style="display:none">
-        <div class="lbl-sm">LENS POSITION  <span class="slider-val" id="lens-val">0.0</span></div>
-        <input type="range" id="lens-slider" min="0" max="100" value="0" step="1"
-               oninput="previewLensSlider(this.value)" onchange="commitLensSlider(this.value)">
-        <div style="display:flex;justify-content:space-between;font-size:10px;color:#5a6070;margin-top:2px"><span>∞ Far</span><span>Near ◎</span></div>
-      </div>
-    </div>
-
-    <div class="sep"></div>
-
-    <!-- Flip / Mirror / Overlay -->
-    <div class="section">
-      <div class="sec-title">IMAGE TRANSFORM</div>
-      <div style="display:flex;gap:8px">
-        <button class="toggle-btn" id="btn-flip"   onclick="toggleFlip()">&#8597; FLIP</button>
-        <button class="toggle-btn" id="btn-mirror" onclick="toggleMirror()">&#8596; MIRROR</button>
-      </div>
-      <div style="margin-top:8px">
-        <button class="toggle-btn" id="btn-overlay" onclick="toggleOverlay()" style="width:100%">&#9432; INFO OVERLAY</button>
-      </div>
-    </div>
-
-    <div class="sep"></div>
-
-    <!-- Event log -->
-    <div class="section" style="padding-bottom:8px">
-      <div class="sec-title">EVENT LOG</div>
-      <div id="log-box"></div>
-    </div>
-
-  </aside>
-</div>
-
-<script>
-// ── state ────────────────────────────────────────────────────────────────────
-let rtspActive   = false;
-let snapLevel    = 'low';
-let snapBusy     = false;
-let _savedRelays = [];
-
-// ── clock ────────────────────────────────────────────────────────────────────
-function tickClock() {
-  const n = new Date();
-  document.getElementById('clock').textContent =
-    n.toISOString().replace('T',' ').slice(0,19);
-  setTimeout(tickClock, 1000);
-}
-tickClock();
-
-// ── status poll ──────────────────────────────────────────────────────────────
-async function pollStatus() {
-  try {
-    const r = await fetch('/api/status');
-    const d = await r.json();
-    updateUI(d);
-  } catch(e) {}
-  setTimeout(pollStatus, 2000);
-}
-
-function updateUI(d) {
-  // stats
-  document.getElementById('st-fps').textContent  = d.fps;
-  document.getElementById('st-jpeg').textContent = d.jpeg_kb;
-  document.getElementById('st-res').textContent  = d.resolution || '—';
-  document.getElementById('st-tx').textContent   =
-    d.local_rtsp ? d.local_rtsp.tx_kbps : '—';
-  document.getElementById('viewers-info').textContent =
-    d.viewers + ' viewer' + (d.viewers !== 1 ? 's' : '');
-
-  // RTSP button
-  rtspActive = !!d.local_rtsp;
-  const btn = document.getElementById('btn-rtsp');
-  if (rtspActive) {
-    btn.textContent = '◉  STOP RTSP';
-    btn.className   = 'btn btn-rtsp-on';
-    document.getElementById('rtsp-url').textContent = d.local_rtsp.url;
-  } else {
-    btn.textContent = '◉  START RTSP';
-    btn.className   = 'btn btn-rtsp-off';
-    document.getElementById('rtsp-url').textContent = '';
-  }
-
-  // overlay badges
-  document.getElementById('badge-tl').textContent =
-    (d.local_rtsp ? 'RTSP' : 'MJPEG') + '  ' + (d.resolution || '');
-  document.getElementById('badge-tr').textContent =
-    d.fps + ' fps';
-  document.getElementById('badge-br').textContent =
-    d.jpeg_kb + ' kB / frame';
-
-  // snapshot zoom / AF status pills
-  const zl = parseFloat(d.zoom_level) || 1.0;
-  const zoomPill = document.getElementById('snap-zoom-pill');
-  if (zl > 1.0) {
-    zoomPill.textContent = `ZOOM ${zl.toFixed(1)}×`;
-    zoomPill.style.display = 'inline';
-  } else {
-    zoomPill.style.display = 'none';
-  }
-  document.getElementById('snap-af-pill').textContent = 'AF:' + (d.af_mode || '—');
-
-  // camera source
-  const camIdx = d.camera_index ?? 0;
-  [0, 1].forEach(i =>
-    document.getElementById('cam-src-' + i)?.classList.toggle('active', i === camIdx));
-  const lbl = document.getElementById('cam-name-lbl');
-  if (lbl) lbl.textContent = d.camera_name || '';
-
-  // relays
-  renderRelays(d.relays || []);
-  updateSavedRelays(d.config && d.config.saved_relays);
-
-  // snapshot busy
-  snapBusy = d.snap_busy;
-  document.getElementById('btn-snap').disabled = snapBusy;
-
-  // log
-  renderLog(d.log || []);
-
-  // apply saved config to form (once on first load if stored)
-  if (d.config && !window._cfgApplied) {
-    window._cfgApplied = true;
-    applyConfig(d.config);
-  }
-}
-
-function applyConfig(c) {
-  const rRes = document.querySelectorAll('input[name=res]');
-  rRes.forEach(r => r.checked = (r.value === c.resolution));
-  const rFps = document.querySelectorAll('input[name=fps]');
-  rFps.forEach(r => r.checked = (r.value === c.fps));
-  document.getElementById('inp-bitrate').value = c.bitrate || '2000';
-  document.getElementById('chk-reconnect').checked = !!c.auto_reconnect;
-  // zoom
-  const zl = parseFloat(c.zoom_level) || 1.0;
-  currentZoom = zl;
-  document.getElementById('zoom-slider').value = Math.round(zl * 10);
-  previewZoomSlider(Math.round(zl * 10));
-  // focus
-  if (c.af_mode) {
-    currentAfMode = c.af_mode;
-    ['continuous','auto','manual'].forEach(m =>
-      document.getElementById('af-'+m)?.classList.toggle('active', m===c.af_mode));
-    document.getElementById('btn-trigger-af').style.display = c.af_mode==='auto' ? 'block':'none';
-    document.getElementById('lens-pos-wrap').style.display  = c.af_mode==='manual' ? 'block':'none';
-    if (c.af_mode === 'manual' && c.lens_position !== undefined) {
-      const sv = Math.round(parseFloat(c.lens_position) * 10);
-      document.getElementById('lens-slider').value = sv;
-      document.getElementById('lens-val').textContent = parseFloat(c.lens_position).toFixed(1);
-    }
-  }
-  // camera source
-  if (c.camera_index !== undefined) {
-    [0, 1].forEach(i =>
-      document.getElementById('cam-src-' + i)?.classList.toggle('active', i === c.camera_index));
-  }
-  // flip / mirror / overlay
-  flipActive    = !!c.flip;
-  mirrorActive  = !!c.mirror;
-  overlayActive = !!c.show_overlay;
-  document.getElementById('btn-flip').classList.toggle('active', flipActive);
-  document.getElementById('btn-mirror').classList.toggle('active', mirrorActive);
-  document.getElementById('btn-overlay').classList.toggle('active', overlayActive);
-}
-
-// ── RTSP toggle ──────────────────────────────────────────────────────────────
-async function toggleRtsp() {
-  const btn = document.getElementById('btn-rtsp');
-  btn.disabled = true;
-  if (!rtspActive) {
-    const res = document.querySelector('input[name=res]:checked')?.value || '720p';
-    const fps = document.querySelector('input[name=fps]:checked')?.value || '30';
-    const bit = document.getElementById('inp-bitrate').value || '2000';
-    const arc = document.getElementById('chk-reconnect').checked;
-    btn.textContent = '◉  STARTING…';
-    const r = await fetch('/api/rtsp/start', {
-      method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({resolution:res, fps:fps, bitrate:bit, auto_reconnect:arc})
-    });
-    const d = await r.json();
-    if (!d.ok) alert('RTSP start failed: ' + d.error);
-  } else {
-    btn.textContent = '◉  STOPPING…';
-    await fetch('/api/rtsp/stop', {method:'POST'});
-  }
-  btn.disabled = false;
-}
-
-// ── saved relay helpers ───────────────────────────────────────────────────────
-function updateSavedRelays(saved) {
-  _savedRelays = saved || [];
-  const sel = document.getElementById('saved-relay-select');
-  const prev = sel.value;
-  sel.innerHTML = '<option value="">— load saved —</option>';
-  _savedRelays.forEach((r, i) => {
-    const opt = document.createElement('option');
-    opt.value = String(i);
-    const fps = r.fps || 30;
-    const bit = r.bitrate || 2000;
-    opt.textContent = `${r.target_url}  [${fps}fps  ${bit}kbps]`;
-    sel.appendChild(opt);
-  });
-  if (prev && sel.querySelector(`option[value="${prev}"]`)) sel.value = prev;
-}
-
-function loadSavedRelay(idx) {
-  if (idx === '') return;
-  const r = _savedRelays[parseInt(idx)];
-  if (!r) return;
-  document.getElementById('relay-url').value         = r.target_url || '';
-  document.getElementById('relay-fps').value         = String(r.fps || 30);
-  document.getElementById('relay-bitrate').value     = r.bitrate || 2000;
-  document.getElementById('relay-reconnect').checked = !!r.auto_reconnect;
-  document.getElementById('saved-relay-select').value = '';
-}
-
-// ── relay ────────────────────────────────────────────────────────────────────
-async function addRelay() {
-  const url = document.getElementById('relay-url').value.trim();
-  if (!url) { alert('Enter target RTSP URL'); return; }
-  const fps = parseInt(document.getElementById('relay-fps').value);
-  const bit = parseInt(document.getElementById('relay-bitrate').value) || 2000;
-  const arc = document.getElementById('relay-reconnect').checked;
-  const r = await fetch('/api/relay/add', {
-    method:'POST',
-    headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({target_url:url, fps:fps, bitrate:bit, auto_reconnect:arc})
-  });
-  const d = await r.json();
-  if (d.ok) {
-    document.getElementById('relay-url').value = '';
-    if (d.saved) {
-      const ss = document.getElementById('relay-save-status');
-      ss.textContent = '✓ Config auto-saved to JSON';
-      setTimeout(() => { ss.textContent = ''; }, 3000);
-    }
-  } else {
-    alert('Relay failed: ' + d.error);
-  }
-}
-
-async function removeRelay(id) {
-  await fetch('/api/relay/remove/' + id, {method:'DELETE'});
-}
-
-function renderRelays(relays) {
-  const box = document.getElementById('relay-list');
-  box.innerHTML = '';
-  if (!relays.length) {
-    box.innerHTML = '<div style="color:#5a6070;font-size:11px">No active relays</div>';
-    return;
-  }
-  relays.forEach(r => {
-    const d = document.createElement('div');
-    d.className = 'relay-item';
-    d.innerHTML = `
-      <div class="relay-url">${r.target_url}</div>
-      <div class="relay-state ${r.state}">${r.state}  ${r.state==='live'?r.tx_kbps+' kbps':''}</div>
-      <button class="relay-del" onclick="removeRelay('${r.id}')" title="Remove">✕</button>`;
-    box.appendChild(d);
-  });
-}
-
-// ── snapshot ─────────────────────────────────────────────────────────────────
-function setSnapLevel(l) {
-  snapLevel = l;
-  ['low','mid','high'].forEach(k => {
-    document.getElementById('snap-'+k).classList.toggle('active', k===l);
-  });
-}
-
-async function takeSnapshot() {
-  if (snapBusy) return;
-  document.getElementById('btn-snap').disabled = true;
-  document.getElementById('snap-result').textContent = 'Capturing…';
-  const r = await fetch('/api/snapshot', {
-    method:'POST',
-    headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({level:snapLevel})
-  });
-  const d = await r.json();
-  const sr = d.snap_result || {};
-  const res = document.getElementById('snap-result');
-  if (sr.ok && sr.file) {
-    const zoomStr = sr.zoom > 1.001
-      ? ` <span style="color:#a0c0ff">ZOOM ${parseFloat(sr.zoom).toFixed(1)}× · AF:${sr.af}</span>`
-      : ` <span style="color:#5a6070">AF:${sr.af}</span>`;
-    res.innerHTML = `✓ <a href="/snaps/${sr.file}" style="color:#00e5b0" target="_blank">${sr.file}</a>${zoomStr}`;
-  } else if (sr.ok === false && sr.error) {
-    res.textContent = '✗ ' + sr.error;
-  } else {
-    const log0 = (d.log || []).find(e => e.msg.includes('snap_'));
-    const fname = log0 ? (log0.msg.match(/snap_\S+\.jpg/)?.[0] || '') : '';
-    res.innerHTML = fname
-      ? `✓ <a href="/snaps/${fname}" style="color:#00e5b0" target="_blank">${fname}</a>`
-      : '✓ Done';
-  }
-}
-
-// ── zoom ─────────────────────────────────────────────────────────────────────
-let currentZoom = 1.0;
-const ZOOM_PRESETS = [1, 1.5, 2, 3, 4, 6, 8];
-
-function previewZoomSlider(val) {
-  const z = (parseInt(val) / 10).toFixed(1);
-  document.getElementById('zoom-slider-val').textContent = z + '×';
-  document.getElementById('zoom-badge').textContent = z + '×';
-  ZOOM_PRESETS.forEach((p, i) => {
-    document.querySelectorAll('#zoom-presets .zoom-btn')[i]
-      ?.classList.toggle('active', Math.abs(p - parseFloat(z)) < 0.05);
-  });
-}
-
-function commitZoomSlider(val) { applyZoom(parseInt(val) / 10); }
-
-async function setZoom(level) {
-  document.getElementById('zoom-slider').value = Math.round(level * 10);
-  previewZoomSlider(Math.round(level * 10));
-  await applyZoom(level);
-}
-
-async function applyZoom(level) {
-  currentZoom = level;
-  try {
-    await fetch('/api/zoom', {method:'POST',
-      headers:{'Content-Type':'application/json'}, body:JSON.stringify({level})});
-  } catch(e) {}
-}
-
-// ── autofocus ─────────────────────────────────────────────────────────────────
-let currentAfMode = 'continuous';
-
-async function setAfMode(mode) {
-  currentAfMode = mode;
-  ['continuous','auto','manual'].forEach(m =>
-    document.getElementById('af-'+m).classList.toggle('active', m===mode));
-  document.getElementById('btn-trigger-af').style.display = mode==='auto'   ? 'block':'none';
-  document.getElementById('lens-pos-wrap').style.display  = mode==='manual' ? 'block':'none';
-  if (mode !== 'manual') {
-    try {
-      await fetch('/api/focus', {method:'POST',
-        headers:{'Content-Type':'application/json'}, body:JSON.stringify({mode})});
-    } catch(e) {}
-  }
-}
-
-function previewLensSlider(val) {
-  document.getElementById('lens-val').textContent = (parseInt(val)/10).toFixed(1);
-}
-
-async function commitLensSlider(val) {
-  const pos = parseInt(val) / 10;
-  document.getElementById('lens-val').textContent = pos.toFixed(1);
-  try {
-    await fetch('/api/focus', {method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({mode:'manual', lens_position:pos})});
-  } catch(e) {}
-}
-
-async function triggerAF() {
-  const btn = document.getElementById('btn-trigger-af');
-  btn.disabled = true; btn.textContent = '⊙ FOCUSING…';
-  try {
-    await fetch('/api/focus', {method:'POST',
-      headers:{'Content-Type':'application/json'}, body:JSON.stringify({mode:'auto'})});
-  } catch(e) {}
-  setTimeout(() => { btn.disabled=false; btn.textContent='⊙ TRIGGER AF'; }, 3000);
-}
-
-// ── camera source ────────────────────────────────────────────────────────────
-async function setCamera(index) {
-  [0, 1].forEach(i =>
-    document.getElementById('cam-src-' + i)?.classList.toggle('active', i === index));
-  try {
-    await fetch('/api/camera', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({index})
-    });
-  } catch(e) {}
-}
-
-// ── flip / mirror / overlay ───────────────────────────────────────────────────
-let flipActive    = false;
-let mirrorActive  = false;
-let overlayActive = true;
-
-async function toggleFlip() {
-  flipActive = !flipActive;
-  document.getElementById('btn-flip').classList.toggle('active', flipActive);
-  try {
-    await fetch('/api/transform', {method:'POST',
-      headers:{'Content-Type':'application/json'}, body:JSON.stringify({flip: flipActive})});
-  } catch(e) {}
-}
-
-async function toggleMirror() {
-  mirrorActive = !mirrorActive;
-  document.getElementById('btn-mirror').classList.toggle('active', mirrorActive);
-  try {
-    await fetch('/api/transform', {method:'POST',
-      headers:{'Content-Type':'application/json'}, body:JSON.stringify({mirror: mirrorActive})});
-  } catch(e) {}
-}
-
-async function toggleOverlay() {
-  overlayActive = !overlayActive;
-  document.getElementById('btn-overlay').classList.toggle('active', overlayActive);
-  try {
-    await fetch('/api/config', {method:'POST',
-      headers:{'Content-Type':'application/json'}, body:JSON.stringify({show_overlay: overlayActive})});
-  } catch(e) {}
-}
-
-// ── log render ───────────────────────────────────────────────────────────────
-function renderLog(entries) {
-  const box = document.getElementById('log-box');
-  box.innerHTML = entries.map(e =>
-    `<div class="log-${e.tag}">[${e.ts}] ${e.msg}</div>`
-  ).join('');
-}
-
-// ── init ─────────────────────────────────────────────────────────────────────
-pollStatus();
-</script>
-</body>
-</html>
-"""
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-#  ENTRY POINT
+#  ENTRY POINT  (HTML served from templates/index.html)
 # ─────────────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
-    ctrl = CameraController()
+    ctrl       = CameraController()
+    hw_monitor = HardwareMonitor(get_config=lambda: ctrl._config)
+    tunnel_mgr = TunnelManager(port=WEB_PORT)
 
     if ctrl._config.get("autostart"):
         threading.Timer(2.0, lambda: ctrl.start_local_rtsp()).start()
@@ -1804,4 +1465,8 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         pass
     finally:
+        if tunnel_mgr:
+            tunnel_mgr.stop()
         ctrl.shutdown()
+        if hw_monitor:
+            hw_monitor.stop()

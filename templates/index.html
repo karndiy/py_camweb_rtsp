@@ -1,0 +1,331 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Arducam 64MP · Web Controller</title>
+<link rel="stylesheet" href="/static/css/app.css">
+</head>
+<body>
+
+<header>
+  <h1>ARDUCAM 64MP</h1>
+  <span class="sub">WEB CONTROLLER</span>
+  <div id="stream-badge" class="stream-badge offline">● OFFLINE</div>
+  <span id="viewers-info" class="viewers-badge">0 viewers</span>
+  <span id="clock" class="clock">--:--:--</span>
+  <button id="btn-fullscreen" class="icon-btn" title="Fullscreen (F)">&#x26F6;</button>
+</header>
+
+<div id="main">
+  <!-- MJPEG preview -->
+  <div id="preview-wrap">
+    <img id="stream-img" src="/stream" alt="stream">
+    <div id="stream-overlay">
+      <div id="stream-spinner">
+        <div class="spinner"></div>
+        <div class="spinner-text">CONNECTING&hellip;</div>
+      </div>
+    </div>
+    <div class="badge badge-tl" id="badge-tl">MJPEG  720&times;480</div>
+    <div class="badge badge-tr" id="badge-tr"></div>
+    <div class="badge badge-br" id="badge-br"></div>
+  </div>
+
+  <!-- Sidebar -->
+  <aside id="sidebar">
+
+    <!-- Camera Source -->
+    <div class="accordion open" data-section="camera">
+      <div class="acc-header">
+        <span class="sec-title">CAMERA SOURCE</span>
+        <span class="acc-arrow">&#9662;</span>
+      </div>
+      <div class="acc-body">
+        <div class="cam-btns">
+          <button class="toggle-btn active" id="cam-src-0">CAM 0&nbsp; Arducam 64MP</button>
+          <button class="toggle-btn" id="cam-src-1">CAM 1&nbsp; Module 3</button>
+        </div>
+        <div id="cam-name-lbl" class="label-dim"></div>
+      </div>
+    </div>
+
+    <!-- Live Stats -->
+    <div class="accordion open" data-section="stats">
+      <div class="acc-header">
+        <span class="sec-title">LIVE STATS</span>
+        <span class="acc-arrow">&#9662;</span>
+      </div>
+      <div class="acc-body">
+        <div class="stat-grid">
+          <div class="stat-item"><div class="stat-val" id="st-fps">&#8212;</div><div class="stat-key">FPS</div></div>
+          <div class="stat-item"><div class="stat-val" id="st-jpeg">&#8212;</div><div class="stat-key">JPEG kB</div></div>
+          <div class="stat-item"><div class="stat-val" id="st-res">&#8212;</div><div class="stat-key">RESOLUTION</div></div>
+          <div class="stat-item"><div class="stat-val" id="st-tx">&#8212;</div><div class="stat-key">RTSP TX kbps</div></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Hardware -->
+    <div class="accordion open" data-section="hardware">
+      <div class="acc-header">
+        <span class="sec-title">HARDWARE</span>
+        <span class="acc-arrow">&#9662;</span>
+      </div>
+      <div class="acc-body">
+        <div class="stat-grid">
+          <div class="stat-item"><div class="stat-val" id="hw-cpu">&#8212;</div><div class="stat-key">CPU %</div></div>
+          <div class="stat-item"><div class="stat-val" id="hw-temp">&#8212;</div><div class="stat-key">TEMP &deg;C</div></div>
+          <div class="stat-item"><div class="stat-val" id="hw-ram-pct">&#8212;</div><div class="stat-key">RAM %</div></div>
+          <div class="stat-item"><div class="stat-val" id="hw-tasks">&#8212;</div><div class="stat-key">TASKS</div></div>
+        </div>
+        <div id="hw-ram-detail" class="label-dim"></div>
+      </div>
+    </div>
+
+    <!-- Local RTSP -->
+    <div class="accordion" data-section="rtsp">
+      <div class="acc-header">
+        <span class="sec-title">LOCAL RTSP</span>
+        <span class="acc-arrow">&#9662;</span>
+      </div>
+      <div class="acc-body">
+        <button id="btn-rtsp" class="btn btn-rtsp-off">&#9679;&nbsp; START RTSP</button>
+        <div id="rtsp-url" class="url-lbl"></div>
+        <div class="field-group">
+          <div class="lbl-sm">RESOLUTION</div>
+          <div class="radio-group">
+            <label><input type="radio" name="res" value="720p" checked> 720p</label>
+            <label><input type="radio" name="res" value="1080p"> 1080p</label>
+            <label><input type="radio" name="res" value="2160p"> 2160p</label>
+          </div>
+        </div>
+        <div class="field-group">
+          <div class="lbl-sm">FPS</div>
+          <div class="radio-group">
+            <label><input type="radio" name="fps" value="5"> 5</label>
+            <label><input type="radio" name="fps" value="10"> 10</label>
+            <label><input type="radio" name="fps" value="15"> 15</label>
+            <label><input type="radio" name="fps" value="30" checked> 30</label>
+          </div>
+        </div>
+        <div class="row">
+          <div>
+            <div class="lbl-sm">BITRATE (kbps)</div>
+            <input type="number" id="inp-bitrate" value="2000" min="100" max="20000" style="width:90px">
+          </div>
+          <label class="checkbox-label" style="align-self:flex-end;padding-bottom:2px">
+            <input type="checkbox" id="chk-reconnect" checked>
+            Auto-reconnect
+          </label>
+        </div>
+      </div>
+    </div>
+
+    <!-- RTSP Relay -->
+    <div class="accordion" data-section="relay">
+      <div class="acc-header">
+        <span class="sec-title">RTSP RELAY</span>
+        <span class="acc-arrow">&#9662;</span>
+      </div>
+      <div class="acc-body">
+        <div class="field-group">
+          <div class="lbl-sm">TARGET URL</div>
+          <input type="text" id="relay-url" placeholder="rtsp://192.168.1.100:554/live">
+        </div>
+        <div class="field-group">
+          <div class="lbl-sm">SAVED CONFIGS</div>
+          <select id="saved-relay-select" style="width:100%">
+            <option value="">&#8212; load saved &#8212;</option>
+          </select>
+        </div>
+        <div class="row">
+          <div>
+            <div class="lbl-sm">FPS</div>
+            <select id="relay-fps">
+              <option value="5">5</option>
+              <option value="10">10</option>
+              <option value="15">15</option>
+              <option value="30" selected>30</option>
+            </select>
+          </div>
+          <div>
+            <div class="lbl-sm">BITRATE (kbps)</div>
+            <input type="number" id="relay-bitrate" value="2000" min="100" max="20000" style="width:90px">
+          </div>
+          <label class="checkbox-label" style="align-self:flex-end;padding-bottom:2px">
+            <input type="checkbox" id="relay-reconnect" checked>
+            Auto
+          </label>
+        </div>
+        <button class="btn btn-blue" id="btn-add-relay">+ ADD RELAY</button>
+        <div id="relay-save-status" class="status-msg"></div>
+        <div id="relay-list"></div>
+      </div>
+    </div>
+
+    <!-- Web Tunnel -->
+    <div class="accordion" data-section="tunnel">
+      <div class="acc-header">
+        <span class="sec-title">WEB TUNNEL</span>
+        <span class="acc-arrow">&#9662;</span>
+      </div>
+      <div class="acc-body">
+        <div class="field-group">
+          <div class="lbl-sm">PROVIDER</div>
+          <select id="tunnel-provider" style="width:100%">
+            <option value="localhost.run">localhost.run (zero-install)</option>
+            <option value="cloudflared">cloudflared</option>
+            <option value="bore">bore</option>
+            <option value="ngrok">ngrok</option>
+          </select>
+        </div>
+        <div class="btn-row">
+          <button class="btn btn-blue" id="btn-tunnel-start">&#9654; START</button>
+          <button class="btn btn-danger" id="btn-tunnel-stop" disabled>&#9632; STOP</button>
+        </div>
+        <div id="tunnel-status" class="label-dim">Stopped</div>
+        <div id="tunnel-url-wrap" class="tunnel-url-box" style="display:none">
+          <div class="lbl-sm">PUBLIC URL</div>
+          <a id="tunnel-url" href="#" target="_blank" class="tunnel-link"></a>
+          <button id="btn-copy-tunnel" class="small-btn">COPY</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Snapshot -->
+    <div class="accordion" data-section="snapshot">
+      <div class="acc-header">
+        <span class="sec-title">SNAPSHOT</span>
+        <span class="acc-arrow">&#9662;</span>
+      </div>
+      <div class="acc-body">
+        <div class="snap-pills">
+          <span id="snap-zoom-pill" style="display:none" class="pill pill-green"></span>
+          <span id="snap-af-pill" class="pill pill-blue">AF:&#8212;</span>
+        </div>
+        <div class="snap-row">
+          <span class="chip active" id="snap-low">LOW 720p</span>
+          <span class="chip" id="snap-mid">MED 12MP</span>
+          <span class="chip" id="snap-high">HIGH 64MP</span>
+        </div>
+        <button class="btn btn-blue" id="btn-snap">&#9679; CAPTURE</button>
+        <div id="snap-result" class="status-msg"></div>
+      </div>
+    </div>
+
+    <!-- Digital Zoom -->
+    <div class="accordion" data-section="zoom">
+      <div class="acc-header">
+        <span class="sec-title">DIGITAL ZOOM&nbsp;<span class="slider-badge" id="zoom-badge">1.0&times;</span></span>
+        <span class="acc-arrow">&#9662;</span>
+      </div>
+      <div class="acc-body">
+        <div id="zoom-presets" class="preset-btns">
+          <button class="preset-btn active" data-zoom="1">1&times;</button>
+          <button class="preset-btn" data-zoom="1.5">1.5&times;</button>
+          <button class="preset-btn" data-zoom="2">2&times;</button>
+          <button class="preset-btn" data-zoom="3">3&times;</button>
+          <button class="preset-btn" data-zoom="4">4&times;</button>
+          <button class="preset-btn" data-zoom="6">6&times;</button>
+          <button class="preset-btn" data-zoom="8">8&times;</button>
+        </div>
+        <div class="lbl-sm">FINE ADJUST&nbsp;<span class="slider-val" id="zoom-slider-val">1.0&times;</span></div>
+        <input type="range" id="zoom-slider" min="10" max="160" value="10" step="1">
+      </div>
+    </div>
+
+    <!-- Autofocus -->
+    <div class="accordion" data-section="autofocus">
+      <div class="acc-header">
+        <span class="sec-title">AUTOFOCUS</span>
+        <span class="acc-arrow">&#9662;</span>
+      </div>
+      <div class="acc-body">
+        <div class="preset-btns" id="af-mode-btns">
+          <button class="preset-btn active" id="af-continuous">CONTINUOUS</button>
+          <button class="preset-btn" id="af-auto">AUTO</button>
+          <button class="preset-btn" id="af-manual">MANUAL</button>
+        </div>
+        <button class="btn btn-blue" id="btn-trigger-af" style="display:none;margin-top:8px">&#8857; TRIGGER AF</button>
+        <div id="lens-pos-wrap" style="display:none;margin-top:8px">
+          <div class="lbl-sm">LENS POSITION&nbsp;<span class="slider-val" id="lens-val">0.0</span></div>
+          <input type="range" id="lens-slider" min="0" max="100" value="0" step="1">
+          <div class="slider-labels"><span>&#8734; Far</span><span>Near &#9678;</span></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Image Transform -->
+    <div class="accordion" data-section="transform">
+      <div class="acc-header">
+        <span class="sec-title">IMAGE TRANSFORM</span>
+        <span class="acc-arrow">&#9662;</span>
+      </div>
+      <div class="acc-body">
+        <div class="btn-row">
+          <button class="toggle-btn" id="btn-flip">&#8597; FLIP</button>
+          <button class="toggle-btn" id="btn-mirror">&#8596; MIRROR</button>
+        </div>
+        <button class="toggle-btn wide" id="btn-overlay">&#9432; INFO OVERLAY</button>
+      </div>
+    </div>
+
+    <!-- Settings -->
+    <div class="accordion" data-section="settings">
+      <div class="acc-header">
+        <span class="sec-title">SETTINGS</span>
+        <span class="acc-arrow">&#9662;</span>
+      </div>
+      <div class="acc-body">
+        <div class="lbl-sm">HARDWARE MONITOR THRESHOLDS</div>
+        <div class="row" style="gap:6px;flex-wrap:wrap;margin-top:6px">
+          <div>
+            <div class="lbl-sm">POLL (s)</div>
+            <input type="number" id="cfg-hw-poll" value="10" min="5" max="300" style="width:60px">
+          </div>
+          <div>
+            <div class="lbl-sm">CPU WARN %</div>
+            <input type="number" id="cfg-hw-cpu-warn" value="80" min="10" max="100" style="width:60px">
+          </div>
+          <div>
+            <div class="lbl-sm">RAM WARN %</div>
+            <input type="number" id="cfg-hw-ram-warn" value="85" min="10" max="100" style="width:60px">
+          </div>
+          <div>
+            <div class="lbl-sm">TEMP WARN &deg;C</div>
+            <input type="number" id="cfg-hw-temp-warn" value="75" min="30" max="100" style="width:60px">
+          </div>
+        </div>
+        <div class="btn-row" style="margin-top:12px">
+          <button class="btn btn-blue" id="btn-save-config">&#128190; SAVE ALL</button>
+          <button class="btn btn-danger" id="btn-reset-config">&#8635; RESET</button>
+        </div>
+        <div id="cfg-status" class="status-msg"></div>
+      </div>
+    </div>
+
+    <!-- Event Log -->
+    <div class="accordion" data-section="log">
+      <div class="acc-header">
+        <span class="sec-title">EVENT LOG</span>
+        <span class="acc-arrow">&#9662;</span>
+      </div>
+      <div class="acc-body">
+        <div class="btn-row" style="margin-bottom:6px">
+          <button class="btn btn-blue" id="btn-view-log" style="font-size:11px;padding:5px">VIEW 100</button>
+          <button class="btn btn-danger" id="btn-clear-log" style="font-size:11px;padding:5px">CLEAR</button>
+        </div>
+        <div id="log-box"></div>
+      </div>
+    </div>
+
+  </aside>
+</div>
+
+<!-- Toast container -->
+<div id="toast-container"></div>
+
+<script src="/static/js/app.js"></script>
+</body>
+</html>
