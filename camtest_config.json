@@ -1,17 +1,17 @@
 {
   "autostart": true,
   "resolution": "2160p",
-  "fps": "15",
-  "bitrate": "6000",
+  "fps": "5",
+  "bitrate": "4000",
   "show_preview": true,
   "auto_reconnect": true,
   "show_overlay": false,
   "zoom_level": 6.0,
   "af_mode": "continuous",
-  "lens_position": 6.4,
+  "lens_position": 0,
   "flip": false,
   "mirror": false,
-  "camera_index": 1,
+  "camera_index": 0,
   "saved_relays": [
     {
       "target_url": "rtsp://103.20.120.240:8554/campi",
