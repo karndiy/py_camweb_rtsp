@@ -25,6 +25,9 @@ The Flask web UI (`camweb.py`) is accessible from any browser on the LAN and run
 | Event log | In-app log panel (last 300 entries) + `cam_events.log` file |
 | Camera profiles | Arducam 64MP · Camera Module 3 (auto-matched resolution maps) |
 | Config persistence | `camtest_config.json` — auto-saved, restored on restart |
+| **Authentication** | Session-based login (PIN/Password) — `admin` and `user` roles |
+| **Role-based UI** | `admin`: full control · `user`: view-only (controls greyed out) |
+| **User Management** | Create / edit / delete users and change passwords from the Settings panel |
 | Systemd service | Auto-start on boot, restart on crash |
 
 ---
@@ -62,6 +65,43 @@ rm mediamtx_v1.9.3_linux_arm64v8.tar.gz mediamtx.yml
 
 ---
 
+## Authentication
+
+All routes require login. Two roles are available:
+
+| Role | Access |
+|---|---|
+| `admin` | Full control — all panels and controls |
+| `user` | View-only — stream, status, hardware info; all control panels greyed out |
+
+**Default credentials** (created automatically on first run):
+
+| Username | Password | Role |
+|---|---|---|
+| `admin` | `123456` | admin |
+| `user` | `123456` | user |
+
+> **Change default passwords immediately** via Settings → User Management after first login.
+
+### How it works
+
+- Sessions use Flask signed cookies (`CAMWEB_SECRET` env var or built-in fallback key)
+- Passwords stored as PBKDF2 hashes in `users.json` (via `werkzeug.security`)
+- Unauthenticated page requests → redirect to `/login`
+- Unauthenticated API requests → `401 {"ok": false, "error": "Unauthorized"}`
+- Non-admin API requests to admin endpoints → `403 {"ok": false, "error": "Forbidden — admin only"}`
+
+### Custom secret key
+
+```bash
+export CAMWEB_SECRET="your-random-secret-here"
+python3 camweb.py
+```
+
+Or set `Environment=CAMWEB_SECRET=...` in `camweb.service`.
+
+---
+
 ## Quick Start
 
 ```bash
@@ -73,6 +113,8 @@ Open in any browser on the same network:
 ```
 http://<PI_IP>:5000
 ```
+
+You will be redirected to the login page. Enter `admin` / `123456` to log in.
 
 ---
 
@@ -106,10 +148,12 @@ camweb.service         systemd service unit for auto-start on boot
 camtest_config.json    Persistent settings (auto-created on first run)
 cam_events.log         Event log (auto-created on first run)
 hardware_stats.json    Latest hardware snapshot written every poll cycle
+users.json             User accounts with hashed passwords (auto-created on first run)
 printscreens.py        Desktop screenshot helper (pyautogui)
 static/css/app.css     Web UI stylesheet
 static/js/app.js       Web UI JavaScript
 templates/index.html   Web UI HTML template
+templates/login.html   Login page
 snap_*.jpg             Snapshot output files (gitignored)
 ```
 
@@ -119,28 +163,83 @@ snap_*.jpg             Snapshot output files (gitignored)
 
 | Method | Endpoint | Description |
 |---|---|---|
+**Authentication** (no login required)
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `GET` | `/login` | Login page |
+| `POST` | `/api/auth/login` | Submit credentials → sets session cookie |
+| `POST` | `/api/auth/logout` | Clear session |
+
+**General** (login required)
+
+| Method | Endpoint | Description |
+|---|---|---|
 | `GET` | `/` | Web UI |
 | `GET` | `/stream` | MJPEG browser stream |
+| `GET` | `/api/auth/me` | Current user info `{username, role}` |
 | `GET` | `/api/status` | Full JSON status (camera, relays, hw, log) |
-| `GET/POST` | `/api/config` | Read / patch config |
+| `GET` | `/api/config` | Read config |
 | `GET` | `/api/config/defaults` | Factory default values |
+| `GET` | `/api/hardware` | Latest hardware stats JSON |
+| `GET` | `/api/log/file` | Last 100 lines of `cam_events.log` |
+| `GET` | `/api/tunnel/providers` | List installed tunnel providers |
+| `GET` | `/snaps/<filename>` | Download snapshot file |
+
+**Admin only** (login + admin role required)
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `POST` | `/api/config` | Patch config |
 | `POST` | `/api/config/reset` | Reset to defaults (keeps saved relays) |
 | `POST` | `/api/rtsp/start` | Start local RTSP via MediaMTX |
 | `POST` | `/api/rtsp/stop` | Stop local RTSP |
 | `POST` | `/api/relay/add` | Add RTSP relay |
 | `DELETE` | `/api/relay/remove/<id>` | Remove relay by ID |
 | `POST` | `/api/snapshot` | Trigger snapshot |
-| `GET` | `/snaps/<filename>` | Download snapshot file |
 | `POST` | `/api/zoom` | Set digital zoom level |
 | `POST` | `/api/focus` | Set autofocus mode / lens position |
 | `POST` | `/api/transform` | Set flip / mirror |
 | `POST` | `/api/camera` | Switch camera index |
-| `GET` | `/api/hardware` | Latest hardware stats JSON |
-| `GET` | `/api/log/file` | Last 100 lines of `cam_events.log` |
 | `POST` | `/api/log/clear` | Clear event log |
 | `POST` | `/api/tunnel/start` | Start web tunnel |
 | `POST` | `/api/tunnel/stop` | Stop web tunnel |
-| `GET` | `/api/tunnel/providers` | List installed tunnel providers |
+| `GET` | `/api/auth/users` | List all users (admin only) |
+| `POST` | `/api/auth/users` | Create / update / delete user (admin only) |
+
+### Example: Login (get session cookie)
+
+```bash
+curl -c cookies.txt -X POST http://PI_IP:5000/api/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"username":"admin","password":"123456"}'
+```
+
+All subsequent admin API calls must include `-b cookies.txt`.
+
+### Example: Add a user
+
+```bash
+curl -b cookies.txt -X POST http://PI_IP:5000/api/auth/users \
+  -H "Content-Type: application/json" \
+  -d '{"username":"operator","password":"secret","role":"user"}'
+```
+
+### Example: Change password / role
+
+```bash
+curl -b cookies.txt -X POST http://PI_IP:5000/api/auth/users \
+  -H "Content-Type: application/json" \
+  -d '{"username":"operator","password":"newpass","role":"admin"}'
+```
+
+### Example: Delete a user
+
+```bash
+curl -b cookies.txt -X POST http://PI_IP:5000/api/auth/users \
+  -H "Content-Type: application/json" \
+  -d '{"username":"operator","delete":true}'
+```
 
 ### Example: Start local RTSP
 
@@ -386,5 +485,13 @@ Auto-reconnect backs off up to 60 s between retries. Remove and re-add the relay
 - Python 3.11 · Raspberry Pi OS 64-bit (Bookworm) · Pi 5
 - FFmpeg 5.1.8 (system package)
 - MediaMTX v1.9.3
-- Flask 2.x
+- Flask 2.x (session-based auth via signed cookies)
 - Pillow (PIL)
+- werkzeug.security — PBKDF2 password hashing (bundled with Flask, no extra install)
+
+### Auth internals
+
+- `users.json` — flat JSON array; loaded fresh on every request (file-based, no DB needed)
+- `_load_users()` auto-creates the file with default `admin`/`user` accounts on first run
+- `@login_required` / `@admin_required` decorators on all routes
+- `applyRoleUI(role)` in `app.js` toggles `.ctrl-disabled` CSS class on `[data-admin-only]` accordion sections

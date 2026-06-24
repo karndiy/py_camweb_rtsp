@@ -8,5 +8,10 @@
     "username": "user",
     "password_hash": "pbkdf2:sha256:260000$NVr273yhETolUnzS$7036fc042c87bbbfcc5004019b699dcec81a1992c5fdbd038b38e44c561b36fe",
     "role": "user"
+  },
+  {
+    "username": "admin2",
+    "password_hash": "pbkdf2:sha256:260000$xO0Iqfl6RHXnxrjl$968cb5dfa7b09c5a1566c59ade2d99e6b04fd337ce85364466c4dbbe3400fef1",
+    "role": "admin"
   }
 ]
