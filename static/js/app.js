@@ -257,7 +257,7 @@ function updateSavedRelays(saved) {
   _savedRelays.forEach((r, i) => {
     const opt = document.createElement('option');
     opt.value       = String(i);
-    opt.textContent = r.target_url + '  [' + (r.fps || 30) + 'fps  ' + (r.bitrate || 2000) + 'kbps]';
+    opt.textContent = r.target_url + '  [' + (r.resolution || '720p') + '  ' + (r.fps || 30) + 'fps  ' + (r.bitrate || 2000) + 'kbps]';
     sel.appendChild(opt);
   });
   if (prev && sel.querySelector('option[value="' + prev + '"]')) sel.value = prev;
@@ -268,10 +268,11 @@ document.getElementById('saved-relay-select').addEventListener('change', functio
   if (!idx) return;
   const r = _savedRelays[parseInt(idx)];
   if (!r) return;
-  document.getElementById('relay-url').value         = r.target_url || '';
-  document.getElementById('relay-fps').value         = String(r.fps || 30);
-  document.getElementById('relay-bitrate').value     = r.bitrate || 2000;
-  document.getElementById('relay-reconnect').checked = !!r.auto_reconnect;
+  document.getElementById('relay-url').value            = r.target_url || '';
+  document.getElementById('relay-resolution').value    = r.resolution || '720p';
+  document.getElementById('relay-fps').value            = String(r.fps || 30);
+  document.getElementById('relay-bitrate').value        = r.bitrate || 2000;
+  document.getElementById('relay-reconnect').checked    = !!r.auto_reconnect;
   this.value = '';
 });
 
@@ -283,6 +284,7 @@ document.getElementById('btn-add-relay').addEventListener('click', async () => {
     url = 'rtsp://' + url;
     document.getElementById('relay-url').value = url;
   }
+  const res = document.getElementById('relay-resolution').value || '720p';
   const fps = parseInt(document.getElementById('relay-fps').value);
   const bit = parseInt(document.getElementById('relay-bitrate').value) || 2000;
   const arc = document.getElementById('relay-reconnect').checked;
@@ -290,7 +292,7 @@ document.getElementById('btn-add-relay').addEventListener('click', async () => {
     const r = await fetch('/api/relay/add', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ target_url: url, fps, bitrate: bit, auto_reconnect: arc })
+      body: JSON.stringify({ target_url: url, resolution: res, fps, bitrate: bit, auto_reconnect: arc })
     });
     const d = await r.json();
     if (d.ok) {
@@ -320,8 +322,9 @@ function renderRelays(relays) {
     const div = document.createElement('div');
     div.className = 'relay-item';
     const stateExtra = r.state === 'live' ? '  ' + r.tx_kbps + ' kbps' : '';
+    const resBadge = '<span class="relay-res-badge">' + escHtml(r.resolution || '720p') + '</span>';
     div.innerHTML =
-      '<div class="relay-url">' + escHtml(r.target_url) + '</div>' +
+      '<div class="relay-url">' + resBadge + escHtml(r.target_url) + '</div>' +
       '<div class="relay-state ' + r.state + '">' + r.state + stateExtra + '</div>' +
       '<button class="relay-del" title="Remove">✕</button>';
     div.querySelector('.relay-del').addEventListener('click', () => removeRelay(r.id));

@@ -376,6 +376,19 @@ input[type=range] { width: 100%; accent-color: var(--accent); cursor: pointer; m
   border: 1px solid var(--border);
 }
 .relay-url              { color: var(--text); font-size: 11px; word-break: break-all; }
+.relay-res-badge {
+  display: inline-block;
+  background: var(--accent);
+  color: #000;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: .04em;
+  padding: 1px 5px;
+  border-radius: 3px;
+  margin-right: 6px;
+  vertical-align: middle;
+  line-height: 1.6;
+}
 .relay-state            { font-size: 10px; margin-top: 3px; }
 .relay-state.live         { color: var(--accent); }
 .relay-state.reconnecting { color: var(--orange); }

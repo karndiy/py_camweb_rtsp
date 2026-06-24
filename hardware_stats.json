@@ -1,14 +1,14 @@
 {
-  "timestamp": "2026-06-23 09:43:59",
-  "cpu_percent": 37.7,
+  "timestamp": "2026-06-24 13:42:43",
+  "cpu_percent": 27.5,
   "ram": {
     "total_mb": 8063.0,
-    "used_mb": 3450.0,
-    "percent": 42.8
+    "used_mb": 3111.8,
+    "percent": 38.6
   },
   "tasks": {
     "running": 1,
-    "total": 624
+    "total": 615
   },
-  "temperature_c": 56.2
+  "temperature_c": 58.4
 }

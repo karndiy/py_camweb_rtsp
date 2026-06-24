@@ -751,19 +751,21 @@ tunnel_mgr: TunnelManager = None   # set in main()
 # ─────────────────────────────────────────────────────────────────────────────
 class RtspRelay:
     def __init__(self, relay_id: str, target_url: str,
-                 fps=30, bitrate_kbps=2000, auto_reconnect=True):
+                 fps=30, bitrate_kbps=2000, auto_reconnect=True, resolution="720p"):
         self.relay_id        = relay_id
         self.target_url      = target_url
+        self.resolution      = resolution
         self._q              = queue.Queue(maxsize=2)
         self._stop_evt       = threading.Event()
         self._ff_proc        = None
         self._auto_reconnect = auto_reconnect
         self.tx_kbps         = 0.0
         self.state           = "connecting"   # connecting | live | error | stopped
+        w, h = RTSP_RES_MAP.get(resolution, (1280, 720))
         self._ffmpeg_cmd = [
             "ffmpeg", "-loglevel", "warning",
             "-f", "mjpeg", "-i", "pipe:0",
-            "-vf", f"fps={fps}",
+            "-vf", f"fps={fps},scale={w}:{h}",
             "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency",
             "-b:v", f"{bitrate_kbps}k",
             "-g", str(fps),
@@ -852,6 +854,7 @@ class RtspRelay:
         return {
             "id":         self.relay_id,
             "target_url": self.target_url,
+            "resolution": self.resolution,
             "state":      self.state,
             "tx_kbps":    round(self.tx_kbps, 1),
         }
@@ -994,7 +997,8 @@ class CameraController:
                 relay = RtspRelay(rid, url,
                                   fps=int(rc.get("fps", 30)),
                                   bitrate_kbps=int(rc.get("bitrate", 2000)),
-                                  auto_reconnect=bool(rc.get("auto_reconnect", True)))
+                                  auto_reconnect=bool(rc.get("auto_reconnect", True)),
+                                  resolution=rc.get("resolution", "720p"))
                 with self._lock:
                     self._relays[rid] = relay
                 cam_log.info(f"Relay [{rid}] restored → {url}")
@@ -1004,11 +1008,14 @@ class CameraController:
             self._preview_th.feeders = self._build_feeders()
 
     def add_relay(self, target_url: str, fps=30,
-                  bitrate_kbps=2000, auto_reconnect=True):
+                  bitrate_kbps=2000, auto_reconnect=True, resolution="720p"):
+        if resolution not in RTSP_RES_MAP:
+            resolution = "720p"
         rid = str(uuid.uuid4())[:8]
         relay = RtspRelay(rid, target_url, fps=fps,
                           bitrate_kbps=bitrate_kbps,
-                          auto_reconnect=auto_reconnect)
+                          auto_reconnect=auto_reconnect,
+                          resolution=resolution)
         with self._lock:
             self._relays[rid] = relay
         if self._preview_th:
@@ -1022,8 +1029,9 @@ class CameraController:
                 "fps":            fps,
                 "bitrate":        bitrate_kbps,
                 "auto_reconnect": auto_reconnect,
+                "resolution":     resolution,
             })
-            cam_log.info(f"Relay config auto-saved: {target_url}")
+            cam_log.info(f"Relay config auto-saved: {target_url} @ {resolution}")
         self._config["last_relay_url"] = target_url
         self.save_config()
         return rid, relay.to_dict(), newly_saved
@@ -1296,8 +1304,12 @@ def api_relay_add():
         bitrate  = max(100, int(d.get("bitrate", 2000)))
     except (TypeError, ValueError):
         fps, bitrate = 30, 2000
+    resolution = d.get("resolution", "720p")
+    if resolution not in RTSP_RES_MAP:
+        return jsonify({"ok": False, "error": f"resolution must be one of {list(RTSP_RES_MAP.keys())}"}), 400
     rid, info, newly_saved = ctrl.add_relay(url, fps=fps, bitrate_kbps=bitrate,
-                                             auto_reconnect=d.get("auto_reconnect", True))
+                                             auto_reconnect=d.get("auto_reconnect", True),
+                                             resolution=resolution)
     return jsonify({"ok": True, "relay": info, "saved": newly_saved})
 
 

@@ -5,8 +5,8 @@
   "bitrate": "4000",
   "show_preview": true,
   "auto_reconnect": true,
-  "show_overlay": false,
-  "zoom_level": 6.0,
+  "show_overlay": true,
+  "zoom_level": 1.0,
   "af_mode": "continuous",
   "lens_position": 0,
   "flip": false,
@@ -15,9 +15,10 @@
   "saved_relays": [
     {
       "target_url": "rtsp://103.20.120.240:8554/campi",
-      "fps": 30,
+      "fps": 5,
       "bitrate": 4000,
-      "auto_reconnect": true
+      "auto_reconnect": true,
+      "resolution": "1080p"
     }
   ],
   "last_relay_url": "rtsp://103.20.120.240:8554/campi",

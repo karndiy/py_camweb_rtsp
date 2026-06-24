@@ -1,31 +1,39 @@
 # Arducam 64MP · Raspberry Pi 5 Camera Controller
 
-A full-featured web camera controller for the **Arducam 64MP IMX686** on Raspberry Pi 5.  
+A full-featured web camera controller for the **Arducam 64MP IMX686** (and Camera Module 3) on Raspberry Pi 5.  
 The Flask web UI (`camweb.py`) is accessible from any browser on the LAN and runs as a systemd service.
 
 ---
 
 ## Features
 
-| Feature | `camweb.py` (Web UI) |
+| Feature | Detail |
 |---|---|
-| Live MJPEG preview | ✅ Any browser on LAN |
-| Camera settings (resolution, FPS, bitrate, zoom, AF) | ✅ |
-| RTSP stream (local via MediaMTX) | ✅ |
-| RTSP relay to remote server | ✅ |
-| Snapshot (64MP / 12MP / 720p) | ✅ |
-| Info overlay (FPS, TX, JPEG size) | ✅ |
-| Event log panel | ✅ |
-| RTSP auto-reconnect | ✅ |
-| Multi-viewer support | ✅ |
+| Live MJPEG preview | Any browser on LAN — multi-viewer |
+| Resolution / FPS / Bitrate | 720p · 1080p · 2160p (4K), 5–30 fps |
+| Digital zoom | 1×–16×, live ROI crop |
+| Autofocus | Continuous / Auto / Manual with lens position slider |
+| Image transform | Flip vertical · Mirror horizontal |
+| Info overlay | FPS, TX kbps, JPEG size, zoom, AF mode, timestamp |
+| Local RTSP stream | MediaMTX on port 8554 — VLC, NVR, any RTSP client |
+| RTSP relay | Push to any remote RTSP server (NVR, cloud, another Pi) |
+| Relay resolution | Per-relay: 720p · 1080p · 2160p (4K), FFmpeg scale filter |
+| Relay auto-reconnect | Exponential backoff, per-relay |
+| Snapshot | 720p · 12MP · 64MP with overlay burn-in |
+| Web tunnel | Expose web UI publicly — localhost.run, cloudflared, bore, ngrok |
+| Hardware monitor | CPU%, RAM%, temperature, task count — live panel + threshold alerts |
+| Event log | In-app log panel (last 300 entries) + `cam_events.log` file |
+| Camera profiles | Arducam 64MP · Camera Module 3 (auto-matched resolution maps) |
+| Config persistence | `camtest_config.json` — auto-saved, restored on restart |
+| Systemd service | Auto-start on boot, restart on crash |
 
 ---
 
 ## Hardware Requirements
 
 - Raspberry Pi 5
-- [Arducam 64MP IMX686](https://www.arducam.com/64mp-ultra-high-res-camera-raspberry-pi/) connected via MIPI CSI-2
-- Raspberry Pi OS (64-bit)
+- [Arducam 64MP IMX686](https://www.arducam.com/64mp-ultra-high-res-camera-raspberry-pi/) **or** Camera Module 3 — connected via MIPI CSI-2
+- Raspberry Pi OS 64-bit (Bookworm recommended)
 
 ---
 
@@ -33,15 +41,15 @@ The Flask web UI (`camweb.py`) is accessible from any browser on the LAN and run
 
 ```bash
 # Python packages
-pip3 install pillow flask
+pip3 install flask pillow
 
-# System packages (usually pre-installed)
-sudo apt install -y ffmpeg python3-tk
+# System packages
+sudo apt install -y ffmpeg
 ```
 
-### MediaMTX (RTSP server)
+### MediaMTX (local RTSP only)
 
-Required for the **local RTSP stream** feature. Not needed for relay-only use.
+Required only for the **local RTSP stream** feature. Not needed for relay-only or web UI use.
 
 ```bash
 cd /home/pi
@@ -56,33 +64,22 @@ rm mediamtx_v1.9.3_linux_arm64v8.tar.gz mediamtx.yml
 
 ## Quick Start
 
-### Web UI (manual)
-
 ```bash
 python3 camweb.py
 ```
 
-Then open in any browser on the same network:
+Open in any browser on the same network:
 
 ```
 http://<PI_IP>:5000
 ```
 
-Example: `http://172.22.1.163:5000`
-
 ---
 
 ## Auto-Start on Boot (systemd)
 
-`camweb.py` runs as a systemd service — starts automatically after every boot, restarts itself on crash.
-
-### Install
-
 ```bash
-# Copy the service file
 sudo cp /home/pi/py/camweb.service /etc/systemd/system/camweb.service
-
-# Enable and start
 sudo systemctl daemon-reload
 sudo systemctl enable camweb.service
 sudo systemctl start camweb.service
@@ -91,67 +88,61 @@ sudo systemctl start camweb.service
 ### Common commands
 
 ```bash
-# Check status
-sudo systemctl status camweb
-
-# View live logs
-sudo journalctl -u camweb -f
-
-# View last 50 log lines
-sudo journalctl -u camweb -n 50
-
-# Restart (e.g. after editing camweb.py)
-sudo systemctl restart camweb
-
-# Stop
+sudo systemctl status camweb          # check status
+sudo systemctl restart camweb         # restart after editing camweb.py
+sudo journalctl -u camweb -f          # live logs
+sudo journalctl -u camweb -n 50       # last 50 lines
 sudo systemctl stop camweb
-
-# Disable auto-start
 sudo systemctl disable camweb
 ```
-
-### How it works
-
-- Starts after `network-online.target` — waits for LAN before binding port 5000
-- Runs as user `pi` (required for camera access)
-- `Restart=on-failure` — systemd restarts the process automatically if it crashes
-- Logs go to the system journal (`journalctl`) and also to `cam_events.log`
 
 ---
 
 ## File Overview
 
 ```
-camweb.py            Web backend (Flask) — browser-based controller
-camweb.service       systemd service unit for auto-start on boot
-camtest_config.json  Shared settings file (auto-created on first run)
-cam_events.log       Event log (auto-created on first run)
-printscreens.py      Desktop screenshot helper (pyautogui)
-snap_*.jpg           Snapshot output files
+camweb.py              Web backend (Flask) — all controller logic
+camweb.service         systemd service unit for auto-start on boot
+camtest_config.json    Persistent settings (auto-created on first run)
+cam_events.log         Event log (auto-created on first run)
+hardware_stats.json    Latest hardware snapshot written every poll cycle
+printscreens.py        Desktop screenshot helper (pyautogui)
+static/css/app.css     Web UI stylesheet
+static/js/app.js       Web UI JavaScript
+templates/index.html   Web UI HTML template
+snap_*.jpg             Snapshot output files (gitignored)
 ```
 
 ---
 
-## Web UI (`camweb.py`)
-
-Access at `http://<PI_IP>:5000` from any device on the LAN.
-
-### REST API
+## REST API
 
 | Method | Endpoint | Description |
 |---|---|---|
 | `GET` | `/` | Web UI |
 | `GET` | `/stream` | MJPEG browser stream |
-| `GET` | `/api/status` | Full JSON status |
-| `POST` | `/api/rtsp/start` | Start local RTSP |
+| `GET` | `/api/status` | Full JSON status (camera, relays, hw, log) |
+| `GET/POST` | `/api/config` | Read / patch config |
+| `GET` | `/api/config/defaults` | Factory default values |
+| `POST` | `/api/config/reset` | Reset to defaults (keeps saved relays) |
+| `POST` | `/api/rtsp/start` | Start local RTSP via MediaMTX |
 | `POST` | `/api/rtsp/stop` | Stop local RTSP |
 | `POST` | `/api/relay/add` | Add RTSP relay |
-| `DELETE` | `/api/relay/remove/<id>` | Remove relay |
-| `GET/POST` | `/api/config` | Read / update config |
+| `DELETE` | `/api/relay/remove/<id>` | Remove relay by ID |
 | `POST` | `/api/snapshot` | Trigger snapshot |
-| `GET` | `/snaps/<filename>` | Download snapshot |
+| `GET` | `/snaps/<filename>` | Download snapshot file |
+| `POST` | `/api/zoom` | Set digital zoom level |
+| `POST` | `/api/focus` | Set autofocus mode / lens position |
+| `POST` | `/api/transform` | Set flip / mirror |
+| `POST` | `/api/camera` | Switch camera index |
+| `GET` | `/api/hardware` | Latest hardware stats JSON |
+| `GET` | `/api/log/file` | Last 100 lines of `cam_events.log` |
+| `POST` | `/api/log/clear` | Clear event log |
+| `POST` | `/api/tunnel/start` | Start web tunnel |
+| `POST` | `/api/tunnel/stop` | Stop web tunnel |
+| `GET` | `/api/tunnel/providers` | List installed tunnel providers |
 
-#### Start RTSP
+### Example: Start local RTSP
 
 ```bash
 curl -X POST http://PI_IP:5000/api/rtsp/start \
@@ -159,106 +150,188 @@ curl -X POST http://PI_IP:5000/api/rtsp/start \
   -d '{"resolution":"1080p","fps":"30","bitrate":"4000","auto_reconnect":true}'
 ```
 
-#### Add RTSP Relay
+### Example: Add RTSP relay
 
 ```bash
 curl -X POST http://PI_IP:5000/api/relay/add \
   -H "Content-Type: application/json" \
-  -d '{"target_url":"rtsp://192.168.1.100:554/live","fps":30,"bitrate":3000}'
+  -d '{"target_url":"rtsp://192.168.1.100:554/live","resolution":"1080p","fps":30,"bitrate":4000,"auto_reconnect":true}'
 ```
 
-#### Trigger Snapshot
+`resolution` must be `720p`, `1080p`, or `2160p` (default `720p`).
+
+### Example: Trigger snapshot
 
 ```bash
 curl -X POST http://PI_IP:5000/api/snapshot \
   -H "Content-Type: application/json" \
-  -d '{"level":"mid"}'
+  -d '{"level":"high"}'
 ```
+
+`level`: `low` (720p) · `mid` (12MP) · `high` (64MP)
+
+### Example: Digital zoom
+
+```bash
+curl -X POST http://PI_IP:5000/api/zoom \
+  -H "Content-Type: application/json" \
+  -d '{"level":4.0}'
+```
+
+### Example: Set focus
+
+```bash
+curl -X POST http://PI_IP:5000/api/focus \
+  -H "Content-Type: application/json" \
+  -d '{"mode":"manual","lens_position":10.0}'
+```
+
+`mode`: `continuous` · `auto` · `manual`
 
 ---
 
-## RTSP Relay Feature
+## RTSP Relay
 
-The relay feature lets you **push the camera stream to any remote RTSP server** — NVR systems (Blue Iris, Milestone, Frigate), other Raspberry Pis, or cloud relay endpoints.
+Push the camera stream to any remote RTSP server (NVR, cloud relay, another Pi). No local MediaMTX needed.
 
 ```
 Pi Camera
    └─→ rpicam-vid (MJPEG)
-           ├─→ Local preview / MJPEG HTTP stream
-           ├─→ Local RTSP  (MediaMTX on port 8554)
-           ├─→ Relay 1 → rtsp://nvr.local:554/cam
-           └─→ Relay 2 → rtsp://192.168.1.50:8554/live
+           ├─→ MJPEG HTTP  → /stream (browser, multi-client)
+           ├─→ Local RTSP  → MediaMTX → rtsp://PI:8554/cam
+           ├─→ Relay 1     → FFmpeg scale(1080p) → rtsp://nvr.local:554/cam
+           └─→ Relay 2     → FFmpeg scale(720p)  → rtsp://cloud:8554/live
 ```
 
-- Each relay runs an independent FFmpeg process
-- Auto-reconnect with exponential backoff (up to 60 s)
-- No local MediaMTX needed — FFmpeg connects directly to the remote
+- Each relay runs an independent FFmpeg process with its own resolution scale filter
+- Resolution choices: `720p` (1280×720) · `1080p` (1920×1080) · `2160p` (3840×2160)
+- Auto-reconnect with exponential backoff up to 60 s
 - Multiple relays can run simultaneously
+- Configs are auto-saved to `saved_relays` and restored on restart
 
 ---
 
-## Architecture
+## Web Tunnel
 
-### Single-camera constraint
+Expose the web UI to the public internet without port-forwarding. Supports four providers:
 
-Only **one process** can access the camera at a time. The solution is a **tee architecture**:
+| Provider | Install |
+|---|---|
+| **localhost.run** | Only needs `ssh` (pre-installed on Pi OS) |
+| **cloudflared** | Download the Cloudflare binary |
+| **bore** | `cargo install bore-cli` |
+| **ngrok** | Download from ngrok.com |
 
+Start via the **WEB TUNNEL** panel in the UI, or:
+
+```bash
+curl -X POST http://PI_IP:5000/api/tunnel/start \
+  -H "Content-Type: application/json" \
+  -d '{"provider":"localhost.run"}'
 ```
-rpicam-vid (single process)
-    └─→ StreamPreview thread
-            ├─→ MjpegBroadcaster  → /stream (HTTP, multiple clients)
-            ├─→ RtspBroadcaster   → FFmpeg → MediaMTX → rtsp://PI:8554/cam
-            └─→ RtspRelay(s)      → FFmpeg → remote RTSP server(s)
-```
 
-### Tearing/stuttering fix
+The public URL appears in the UI and in `cam_events.log` once the tunnel is live.
 
-Worker threads write to `_pending_frame` (last-write-wins).  
-A `_gui_tick()` timer fires every 33 ms and renders the latest frame once — preventing Tk event queue flooding.
+---
 
-### RTSP encoding
+## Hardware Monitor
 
-- Encoder: `libx264 -preset ultrafast -tune zerolatency`
-- `h264_v4l2m2m` is **not** available on Pi 5 — do not use it
-- FPS downsampling: `-vf fps=N` filter (e.g., 30 fps capture → 5 fps RTSP output)
+Polls `/proc/stat`, `/proc/meminfo`, `/proc/loadavg`, and `/sys/class/thermal` every `hw_poll_interval` seconds (default 10 s).
+
+- Live stats in the **HARDWARE** panel: CPU%, RAM%, temperature °C, task count
+- Writes `hardware_stats.json` after every poll
+- Logs a summary line to `cam_events.log` every minute
+- Threshold warnings logged when CPU/RAM/temp exceed configured limits
+
+---
+
+## Camera Profiles
+
+| Index | Name | Snapshot resolutions |
+|---|---|---|
+| `0` | Arducam 64MP | low: 1280×720 · mid: 4608×2592 · high: 9152×6944 |
+| `1` | Camera Module 3 | low: 1280×720 · mid: 2304×1296 · high: 4608×2592 |
+
+Switch via the UI camera selector or `POST /api/camera` with `{"index": 1}`.
 
 ---
 
 ## Configuration (`camtest_config.json`)
 
-Auto-created in the same directory as the script on first run.
+Auto-created on first run. All fields can be patched via `POST /api/config` or the Settings panel.
 
 ```json
 {
-  "autostart":      true,
-  "resolution":     "2160p",
-  "fps":            "30",
-  "bitrate":        "4000",
-  "show_preview":   true,
-  "auto_reconnect": true,
-  "show_overlay":   false,
-  "zoom_level":     4.0,
-  "af_mode":        "auto",
-  "lens_position":  0.0,
-  "flip":           false,
-  "mirror":         false
+  "autostart":        false,
+  "resolution":       "720p",
+  "fps":              "30",
+  "bitrate":          "2000",
+  "show_preview":     true,
+  "auto_reconnect":   true,
+  "show_overlay":     true,
+  "zoom_level":       1.0,
+  "af_mode":          "continuous",
+  "lens_position":    0.0,
+  "flip":             false,
+  "mirror":           false,
+  "camera_index":     0,
+  "saved_relays":     [],
+  "last_relay_url":   "",
+  "hw_poll_interval": 10,
+  "hw_cpu_warn":      80,
+  "hw_ram_warn":      85,
+  "hw_temp_warn":     75
 }
 ```
 
 | Key | Type | Description |
 |---|---|---|
-| `autostart` | bool | Start RTSP stream automatically on launch |
-| `resolution` | string | Stream resolution: `720p` · `1080p` · `2160p` |
+| `autostart` | bool | Start local RTSP automatically on launch |
+| `resolution` | string | RTSP stream resolution: `720p` · `1080p` · `2160p` |
 | `fps` | string | Frames per second: `5` · `10` · `15` · `30` |
 | `bitrate` | string | Encoding bitrate in kbps |
-| `show_preview` | bool | Show MJPEG preview |
-| `auto_reconnect` | bool | Restart FFmpeg on network loss |
-| `show_overlay` | bool | Show FPS/TX/size stats on preview |
-| `zoom_level` | float | Digital zoom multiplier (1.0 = no zoom) |
-| `af_mode` | string | Autofocus mode: `auto` · `manual` · `continuous` |
+| `show_preview` | bool | Show MJPEG preview in browser |
+| `auto_reconnect` | bool | Restart FFmpeg on disconnect |
+| `show_overlay` | bool | Burn info HUD onto preview frames |
+| `zoom_level` | float | Digital zoom multiplier (1.0–16.0) |
+| `af_mode` | string | `continuous` · `auto` · `manual` |
 | `lens_position` | float | Manual lens position (0.0 = infinity) |
 | `flip` | bool | Flip image vertically |
 | `mirror` | bool | Mirror image horizontally |
+| `camera_index` | int | `0` = Arducam 64MP · `1` = Camera Module 3 |
+| `saved_relays` | array | Persisted relay configs (url, fps, bitrate, resolution, auto_reconnect) |
+| `last_relay_url` | string | Last used relay URL (pre-filled in UI) |
+| `hw_poll_interval` | int | Hardware poll interval in seconds |
+| `hw_cpu_warn` | int | CPU % threshold for log warning |
+| `hw_ram_warn` | int | RAM % threshold for log warning |
+| `hw_temp_warn` | int | Temperature °C threshold for log warning |
+
+---
+
+## Architecture
+
+### Single-camera tee
+
+Only one process can open the camera at a time. `StreamPreview` is the single reader; all outputs are tee'd:
+
+```
+rpicam-vid (one process)
+    └─→ StreamPreview thread
+            ├─→ OverlayFeeder  (burns HUD when show_overlay=true)
+            │       └─→ MjpegBroadcaster → /stream (HTTP, unlimited clients)
+            ├─→ RtspBroadcaster → FFmpeg → MediaMTX → rtsp://PI:8554/cam
+            └─→ RtspRelay(s)   → FFmpeg (per relay, with scale filter) → remote RTSP
+```
+
+### RTSP encoding
+
+- Encoder: `libx264 -preset ultrafast -tune zerolatency`
+- `h264_v4l2m2m` is **not** available on Pi 5 — do not use it
+- Frame rate + scale: `-vf fps=N,scale=W:H` (relay only; local RTSP uses capture resolution)
+
+### Relay resolution scaling
+
+Each `RtspRelay` applies `-vf fps=N,scale=W:H` in its FFmpeg command, so relay output resolution is independent of the camera capture resolution.
 
 ---
 
@@ -266,48 +339,52 @@ Auto-created in the same directory as the script on first run.
 
 ### VLC cannot connect to RTSP
 
-1. Check FFmpeg is running: `ps aux | grep ffmpeg`
-2. Check MediaMTX is running: `ps aux | grep mediamtx`
-3. Check port 8554 is open: `ss -tlnp | grep 8554`
-4. Verify MediaMTX config has `cam: {}` (not `cam:` null)
+```bash
+ps aux | grep ffmpeg       # FFmpeg running?
+ps aux | grep mediamtx     # MediaMTX running?
+ss -tlnp | grep 8554       # port open?
+```
 
 ### Error 255 on high-resolution snapshot
 
-Increase CMA (Contiguous Memory Allocator) in `/boot/firmware/config.txt`:
+Increase CMA in `/boot/firmware/config.txt`:
 
 ```
 dtoverlay=vc4-kms-v3d
 gpu_mem=256
 ```
 
+Then reboot.
+
 ### `rpicam-vid` not found
 
 ```bash
-which libcamera-vid   # older Pi OS uses libcamera prefix
+which libcamera-vid   # older Pi OS uses libcamera- prefix
 ```
 
-The scripts auto-detect `rpicam` vs `libcamera` prefix.
+`camweb.py` auto-detects `rpicam` vs `libcamera` prefix at startup.
 
 ### MJPEG stream freezes in browser
 
-The browser reconnects automatically after 2 s via the `onerror` handler on the `<img>` tag. Check the Pi's CPU load — 2160p RTSP encoding is heavy.
+The browser reconnects automatically after 2 s via the `onerror` handler on the `<img>` tag.  
+Check CPU load — 2160p encoding is heavy without hardware acceleration.
 
----
+### Relay stuck in `reconnecting`
 
-## Screenshot Helper (`printscreens.py`)
-
-Utility for capturing the full desktop screen using `pyautogui`. Saves output as `full_screen_<timestamp>.png`.
+Check the target URL is reachable from the Pi:
 
 ```bash
-pip3 install pyautogui
+ffprobe rtsp://TARGET_URL
 ```
+
+Auto-reconnect backs off up to 60 s between retries. Remove and re-add the relay to reset immediately.
 
 ---
 
 ## Development Notes
 
-- Python 3.11 · Raspberry Pi OS 64-bit · Pi 5
+- Python 3.11 · Raspberry Pi OS 64-bit (Bookworm) · Pi 5
 - FFmpeg 5.1.8 (system package)
 - MediaMTX v1.9.3
-- Flask 2.2.2
+- Flask 2.x
 - Pillow (PIL)
