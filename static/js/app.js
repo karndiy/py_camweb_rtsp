@@ -112,6 +112,7 @@ async function initAuth() {
     const nameEl = document.getElementById('header-username');
     if (nameEl) nameEl.textContent = d.username;
     applyRoleUI(d.role);
+    if (d.role === 'admin') loadUsers();
   } catch (e) {
     window.location.href = '/login';
   }
@@ -650,6 +651,150 @@ fetch('/api/tunnel/providers').then(r => r.json()).then(d => {
   const first = sel.querySelector('option:not([disabled])');
   if (first) sel.value = first.value;
 }).catch(() => {});
+
+// ── User Management ───────────────────────────────────────────────────────────
+async function loadUsers() {
+  const list = document.getElementById('um-user-list');
+  if (!list) return;
+  try {
+    const r = await fetch('/api/auth/users');
+    if (!r.ok) return;
+    const d = await r.json();
+    const selfName = document.getElementById('header-username')?.textContent || '';
+    list.innerHTML = '';
+    d.users.forEach(u => {
+      const isSelf = u.username === selfName;
+      // user row
+      const row = document.createElement('div');
+      row.className = 'um-row';
+      row.innerHTML =
+        '<span class="um-username">' + escHtml(u.username) + '</span>' +
+        '<span class="user-role ' + (u.role === 'admin' ? '' : 'role-user') + '">' + u.role.toUpperCase() + '</span>' +
+        '<button class="um-btn-pw small-btn" data-user="' + escHtml(u.username) + '">PW</button>' +
+        (isSelf ? '<span class="um-self-tag">YOU</span>'
+                : '<button class="relay-del um-btn-del" data-user="' + escHtml(u.username) + '" title="Delete">✕</button>');
+      list.appendChild(row);
+
+      // inline pw + role edit form (hidden)
+      const form = document.createElement('div');
+      form.className = 'um-pw-form';
+      form.style.display = 'none';
+      form.dataset.forUser = u.username;
+      form.innerHTML =
+        '<div class="row" style="gap:6px;align-items:flex-end;margin-top:6px">' +
+          '<div style="flex:1"><div class="lbl-sm">NEW PASSWORD</div>' +
+            '<input type="password" class="um-pw-input" placeholder="leave blank to keep" style="width:100%"></div>' +
+          '<div><div class="lbl-sm">ROLE</div><select class="um-role-select">' +
+            '<option value="admin"' + (u.role === 'admin' ? ' selected' : '') + '>admin</option>' +
+            '<option value="user"'  + (u.role === 'user'  ? ' selected' : '') + '>user</option>' +
+          '</select></div>' +
+          '<button class="btn btn-blue um-pw-save" style="font-size:11px;padding:5px 8px">SAVE</button>' +
+          '<button class="um-pw-cancel small-btn" style="padding:5px 7px">✕</button>' +
+        '</div>';
+      list.appendChild(form);
+    });
+
+    // wire: toggle pw form
+    list.querySelectorAll('.um-btn-pw').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const form = list.querySelector('.um-pw-form[data-for-user="' + btn.dataset.user + '"]');
+        if (!form) return;
+        const open = form.style.display !== 'none';
+        list.querySelectorAll('.um-pw-form').forEach(f => { f.style.display = 'none'; });
+        if (!open) form.style.display = 'block';
+      });
+    });
+
+    // wire: save pw / role
+    list.querySelectorAll('.um-pw-save').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const form     = btn.closest('.um-pw-form');
+        const username = form.dataset.forUser;
+        const password = form.querySelector('.um-pw-input').value.trim();
+        const role     = form.querySelector('.um-role-select').value;
+        const body     = { username, role };
+        if (password) body.password = password;
+        const r = await fetch('/api/auth/users', {
+          method: 'POST', headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify(body),
+        });
+        const dd = await r.json();
+        if (dd.ok) { toast('User updated', 'success'); form.style.display = 'none'; loadUsers(); }
+        else        toast(dd.error || 'Update failed', 'error');
+      });
+    });
+
+    // wire: cancel pw form
+    list.querySelectorAll('.um-pw-cancel').forEach(btn => {
+      btn.addEventListener('click', () => { btn.closest('.um-pw-form').style.display = 'none'; });
+    });
+
+    // wire: delete user
+    list.querySelectorAll('.um-btn-del').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const username = btn.dataset.user;
+        if (!confirm('Delete user "' + username + '"?\nThis cannot be undone.')) return;
+        const r = await fetch('/api/auth/users', {
+          method: 'POST', headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({ username, delete: true }),
+        });
+        const dd = await r.json();
+        if (dd.ok) { toast('User deleted', 'warn'); loadUsers(); }
+        else        toast(dd.error || 'Delete failed', 'error');
+      });
+    });
+  } catch (e) {}
+}
+
+// add user form toggle
+document.getElementById('um-btn-add-user')?.addEventListener('click', () => {
+  const form = document.getElementById('um-add-form');
+  const open = form.style.display !== 'none';
+  form.style.display = open ? 'none' : 'block';
+  if (!open) document.getElementById('um-new-username').focus();
+});
+
+document.getElementById('um-btn-cancel-add')?.addEventListener('click', () => {
+  document.getElementById('um-add-form').style.display = 'none';
+});
+
+document.getElementById('um-btn-create')?.addEventListener('click', async () => {
+  const username = document.getElementById('um-new-username').value.trim();
+  const password = document.getElementById('um-new-password').value.trim();
+  const role     = document.getElementById('um-new-role').value;
+  const status   = document.getElementById('um-status');
+  if (!username || !password) {
+    status.textContent = 'Username and password required.';
+    status.style.color = 'var(--red)';
+    return;
+  }
+  const r = await fetch('/api/auth/users', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ username, password, role }),
+  });
+  const d = await r.json();
+  if (d.ok) {
+    toast('User created', 'success');
+    document.getElementById('um-add-form').style.display = 'none';
+    document.getElementById('um-new-username').value = '';
+    document.getElementById('um-new-password').value = '';
+    status.textContent = '';
+    loadUsers();
+  } else {
+    status.textContent = d.error || 'Create failed';
+    status.style.color = 'var(--red)';
+  }
+});
+
+// load users when Settings accordion opens
+document.querySelectorAll('.acc-header').forEach(header => {
+  header.addEventListener('click', () => {
+    const acc = header.closest('.accordion');
+    if (acc.dataset.section === 'settings' && !acc.classList.contains('open')) {
+      setTimeout(loadUsers, 50);   // after toggle animation starts
+    }
+  });
+});
 
 // ── Settings ──────────────────────────────────────────────────────────────────
 document.getElementById('btn-save-config').addEventListener('click', async () => {

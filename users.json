@@ -1,0 +1,12 @@
+[
+  {
+    "username": "admin",
+    "password_hash": "pbkdf2:sha256:260000$9oG2G6mklzIPGFRh$259bf324da7ae2c10b09ec06cb328475ee58dd68c052c318720a854a4001ffb9",
+    "role": "admin"
+  },
+  {
+    "username": "user",
+    "password_hash": "pbkdf2:sha256:260000$NVr273yhETolUnzS$7036fc042c87bbbfcc5004019b699dcec81a1992c5fdbd038b38e44c561b36fe",
+    "role": "user"
+  }
+]

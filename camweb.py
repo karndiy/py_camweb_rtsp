@@ -1342,6 +1342,17 @@ def api_auth_users():
     new_role     = d.get("role", "").strip()
     if not username:
         return jsonify({"ok": False, "error": "username required"}), 400
+
+    # DELETE user
+    if d.get("delete"):
+        if username == session.get("username"):
+            return jsonify({"ok": False, "error": "Cannot delete yourself"}), 400
+        users = [u for u in _load_users() if u["username"] != username]
+        _save_users(users)
+        cam_log.info(f"User deleted: {username} by {session.get('username')}")
+        return jsonify({"ok": True})
+
+    # CREATE or UPDATE user
     users = _load_users()
     found = False
     for u in users:
@@ -1360,7 +1371,7 @@ def api_auth_users():
                       "password_hash": generate_password_hash(new_password),
                       "role": role})
     _save_users(users)
-    cam_log.info(f"User updated: {username} by {session.get('username')}")
+    cam_log.info(f"User {'created' if not found else 'updated'}: {username} by {session.get('username')}")
     return jsonify({"ok": True})
 
 
