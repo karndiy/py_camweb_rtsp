@@ -14,6 +14,11 @@
   <div id="stream-badge" class="stream-badge offline">● OFFLINE</div>
   <span id="viewers-info" class="viewers-badge">0 viewers</span>
   <span id="clock" class="clock">--:--:--</span>
+  <div id="header-user" class="header-user" style="display:none">
+    <span id="header-username" class="header-uname"></span>
+    <span id="header-role-badge" class="user-role"></span>
+    <button class="btn-logout" id="btn-logout">LOGOUT</button>
+  </div>
   <button id="btn-fullscreen" class="icon-btn" title="Fullscreen (F)">&#x26F6;</button>
 </header>
 
@@ -36,7 +41,7 @@
   <aside id="sidebar">
 
     <!-- Camera Source -->
-    <div class="accordion open" data-section="camera">
+    <div class="accordion open" data-section="camera" data-admin-only="true">
       <div class="acc-header">
         <span class="sec-title">CAMERA SOURCE</span>
         <span class="acc-arrow">&#9662;</span>
@@ -84,7 +89,7 @@
     </div>
 
     <!-- Local RTSP -->
-    <div class="accordion" data-section="rtsp">
+    <div class="accordion" data-section="rtsp" data-admin-only="true">
       <div class="acc-header">
         <span class="sec-title">LOCAL RTSP</span>
         <span class="acc-arrow">&#9662;</span>
@@ -123,7 +128,7 @@
     </div>
 
     <!-- RTSP Relay -->
-    <div class="accordion" data-section="relay">
+    <div class="accordion" data-section="relay" data-admin-only="true">
       <div class="acc-header">
         <span class="sec-title">RTSP RELAY</span>
         <span class="acc-arrow">&#9662;</span>
@@ -173,7 +178,7 @@
     </div>
 
     <!-- Web Tunnel -->
-    <div class="accordion" data-section="tunnel">
+    <div class="accordion" data-section="tunnel" data-admin-only="true">
       <div class="acc-header">
         <span class="sec-title">WEB TUNNEL</span>
         <span class="acc-arrow">&#9662;</span>
@@ -202,7 +207,7 @@
     </div>
 
     <!-- Snapshot -->
-    <div class="accordion" data-section="snapshot">
+    <div class="accordion" data-section="snapshot" data-admin-only="true">
       <div class="acc-header">
         <span class="sec-title">SNAPSHOT</span>
         <span class="acc-arrow">&#9662;</span>
@@ -223,7 +228,7 @@
     </div>
 
     <!-- Digital Zoom -->
-    <div class="accordion" data-section="zoom">
+    <div class="accordion" data-section="zoom" data-admin-only="true">
       <div class="acc-header">
         <span class="sec-title">DIGITAL ZOOM&nbsp;<span class="slider-badge" id="zoom-badge">1.0&times;</span></span>
         <span class="acc-arrow">&#9662;</span>
@@ -244,7 +249,7 @@
     </div>
 
     <!-- Autofocus -->
-    <div class="accordion" data-section="autofocus">
+    <div class="accordion" data-section="autofocus" data-admin-only="true">
       <div class="acc-header">
         <span class="sec-title">AUTOFOCUS</span>
         <span class="acc-arrow">&#9662;</span>
@@ -265,7 +270,7 @@
     </div>
 
     <!-- Image Transform -->
-    <div class="accordion" data-section="transform">
+    <div class="accordion" data-section="transform" data-admin-only="true">
       <div class="acc-header">
         <span class="sec-title">IMAGE TRANSFORM</span>
         <span class="acc-arrow">&#9662;</span>
@@ -280,7 +285,7 @@
     </div>
 
     <!-- Settings -->
-    <div class="accordion" data-section="settings">
+    <div class="accordion" data-section="settings" data-admin-only="true">
       <div class="acc-header">
         <span class="sec-title">SETTINGS</span>
         <span class="acc-arrow">&#9662;</span>

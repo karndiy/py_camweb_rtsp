@@ -80,10 +80,53 @@ streamImg.addEventListener('error', () => {
   }, 2000);
 });
 
+// ── Auth ──────────────────────────────────────────────────────────────────────
+let currentRole = 'user';
+
+function applyRoleUI(role) {
+  currentRole = role;
+  const adminSections = document.querySelectorAll('[data-admin-only="true"]');
+  if (role !== 'admin') {
+    adminSections.forEach(el => el.classList.add('ctrl-disabled'));
+  } else {
+    adminSections.forEach(el => el.classList.remove('ctrl-disabled'));
+  }
+  const badge = document.getElementById('header-role-badge');
+  if (badge) {
+    badge.textContent = role.toUpperCase();
+    badge.className   = 'user-role' + (role === 'admin' ? '' : ' role-user');
+  }
+}
+
+async function initAuth() {
+  try {
+    const r = await fetch('/api/auth/me');
+    if (r.status === 401) {
+      window.location.href = '/login';
+      return;
+    }
+    const d = await r.json();
+    if (!d.ok) { window.location.href = '/login'; return; }
+    const userEl = document.getElementById('header-user');
+    if (userEl) userEl.style.display = 'flex';
+    const nameEl = document.getElementById('header-username');
+    if (nameEl) nameEl.textContent = d.username;
+    applyRoleUI(d.role);
+  } catch (e) {
+    window.location.href = '/login';
+  }
+}
+
+document.getElementById('btn-logout')?.addEventListener('click', async () => {
+  await fetch('/api/auth/logout', { method: 'POST' });
+  window.location.href = '/login';
+});
+
 // ── Status poll ───────────────────────────────────────────────────────────────
 async function pollStatus() {
   try {
     const r = await fetch('/api/status');
+    if (r.status === 401) { window.location.href = '/login'; return; }
     const d = await r.json();
     updateUI(d);
   } catch (e) {}
@@ -700,5 +743,7 @@ async function pollHardware() {
 }
 
 // ── Init ──────────────────────────────────────────────────────────────────────
-pollStatus();
-pollHardware();
+initAuth().then(() => {
+  pollStatus();
+  pollHardware();
+});

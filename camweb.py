@@ -21,10 +21,14 @@ import logging
 import uuid
 from collections import deque
 from datetime import datetime
+from functools import wraps
 from PIL import Image, ImageDraw, ImageFont
 
 try:
-    from flask import Flask, Response, request, jsonify, send_from_directory, render_template
+    from flask import (Flask, Response, request, jsonify,
+                       send_from_directory, render_template,
+                       session, redirect)
+    from werkzeug.security import generate_password_hash, check_password_hash
 except ImportError:
     print("Run first:  pip3 install flask pillow")
     raise SystemExit(1)
@@ -36,6 +40,7 @@ _BASE       = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(_BASE, "camtest_config.json")   # shared with camtest5.py
 LOG_PATH      = os.path.join(_BASE, "cam_events.log")
 HW_STATS_PATH = os.path.join(_BASE, "hardware_stats.json")
+USERS_PATH    = os.path.join(_BASE, "users.json")
 SNAP_DIR      = _BASE
 
 RTSP_RES_MAP = {
@@ -1223,6 +1228,8 @@ class CameraController:
 #  FLASK APPLICATION
 # ─────────────────────────────────────────────────────────────────────────────
 app        = Flask(__name__, template_folder="templates", static_folder="static")
+app.secret_key = os.environ.get("CAMWEB_SECRET", "camweb-rtsp-2025-xk9q")
+
 ctrl:       CameraController = None    # set in main()
 tunnel_mgr: TunnelManager    = None    # set in main()
 # hw_monitor declared at module level above; populated in main()
@@ -1232,12 +1239,142 @@ log = logging.getLogger("werkzeug")
 log.setLevel(logging.ERROR)
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+#  AUTH — user store & decorators
+# ─────────────────────────────────────────────────────────────────────────────
+def _load_users():
+    if not os.path.exists(USERS_PATH):
+        users = [
+            {"username": "admin", "password_hash": generate_password_hash("123456"), "role": "admin"},
+            {"username": "user",  "password_hash": generate_password_hash("123456"), "role": "user"},
+        ]
+        with open(USERS_PATH, "w", encoding="utf-8") as f:
+            json.dump(users, f, indent=2)
+        return users
+    with open(USERS_PATH, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+def _save_users(users):
+    with open(USERS_PATH, "w", encoding="utf-8") as f:
+        json.dump(users, f, indent=2)
+
+def _find_user(username):
+    for u in _load_users():
+        if u["username"] == username:
+            return u
+    return None
+
+def login_required(f):
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        if "username" not in session:
+            if request.path.startswith("/api/"):
+                return jsonify({"ok": False, "error": "Unauthorized"}), 401
+            return redirect("/login")
+        return f(*args, **kwargs)
+    return decorated
+
+def admin_required(f):
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        if "username" not in session:
+            if request.path.startswith("/api/"):
+                return jsonify({"ok": False, "error": "Unauthorized"}), 401
+            return redirect("/login")
+        if session.get("role") != "admin":
+            if request.path.startswith("/api/"):
+                return jsonify({"ok": False, "error": "Forbidden — admin only"}), 403
+            return redirect("/")
+        return f(*args, **kwargs)
+    return decorated
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  AUTH ROUTES
+# ─────────────────────────────────────────────────────────────────────────────
+@app.route("/login")
+def login_page():
+    if "username" in session:
+        return redirect("/")
+    return render_template("login.html")
+
+
+@app.route("/api/auth/login", methods=["POST"])
+def api_auth_login():
+    d        = request.get_json(silent=True) or {}
+    username = d.get("username", "").strip()
+    password = d.get("password", "")
+    user = _find_user(username)
+    if not user or not check_password_hash(user["password_hash"], password):
+        return jsonify({"ok": False, "error": "Invalid credentials"}), 401
+    session["username"] = user["username"]
+    session["role"]     = user["role"]
+    cam_log.info(f"Login: {username} ({user['role']})")
+    return jsonify({"ok": True, "username": user["username"], "role": user["role"]})
+
+
+@app.route("/api/auth/logout", methods=["POST"])
+def api_auth_logout():
+    username = session.get("username", "?")
+    session.clear()
+    cam_log.info(f"Logout: {username}")
+    return jsonify({"ok": True})
+
+
+@app.route("/api/auth/me")
+def api_auth_me():
+    if "username" not in session:
+        return jsonify({"ok": False, "error": "Not logged in"}), 401
+    return jsonify({"ok": True, "username": session["username"], "role": session["role"]})
+
+
+@app.route("/api/auth/users", methods=["GET", "POST"])
+@admin_required
+def api_auth_users():
+    if request.method == "GET":
+        users = _load_users()
+        return jsonify({"ok": True, "users": [
+            {"username": u["username"], "role": u["role"]} for u in users
+        ]})
+    d            = request.get_json(silent=True) or {}
+    username     = d.get("username", "").strip()
+    new_password = d.get("password", "").strip()
+    new_role     = d.get("role", "").strip()
+    if not username:
+        return jsonify({"ok": False, "error": "username required"}), 400
+    users = _load_users()
+    found = False
+    for u in users:
+        if u["username"] == username:
+            if new_password:
+                u["password_hash"] = generate_password_hash(new_password)
+            if new_role in ("admin", "user"):
+                u["role"] = new_role
+            found = True
+            break
+    if not found:
+        if not new_password:
+            return jsonify({"ok": False, "error": "password required for new user"}), 400
+        role = new_role if new_role in ("admin", "user") else "user"
+        users.append({"username": username,
+                      "password_hash": generate_password_hash(new_password),
+                      "role": role})
+    _save_users(users)
+    cam_log.info(f"User updated: {username} by {session.get('username')}")
+    return jsonify({"ok": True})
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  CAMERA ROUTES
+# ─────────────────────────────────────────────────────────────────────────────
 @app.route("/")
+@login_required
 def index():
     return render_template("index.html")
 
 
 @app.route("/stream")
+@login_required
 def stream():
     """MJPEG HTTP stream — works directly in <img src="/stream">."""
     cid, q = ctrl.mjpeg_bc.subscribe()
@@ -1248,7 +1385,6 @@ def stream():
                 try:
                     jpeg = q.get(timeout=5)
                 except queue.Empty:
-                    # keep-alive: send current frame again or wait
                     continue
                 yield (b"--frame\r\n"
                        b"Content-Type: image/jpeg\r\n\r\n" + jpeg + b"\r\n")
@@ -1262,13 +1398,17 @@ def stream():
 
 
 @app.route("/api/status")
+@login_required
 def api_status():
     return jsonify(ctrl.get_status())
 
 
 @app.route("/api/config", methods=["GET", "POST"])
+@login_required
 def api_config():
     if request.method == "POST":
+        if session.get("role") != "admin":
+            return jsonify({"ok": False, "error": "Forbidden — admin only"}), 403
         data = request.get_json(silent=True) or {}
         ctrl.save_config(data)
         return jsonify({"ok": True})
@@ -1276,6 +1416,7 @@ def api_config():
 
 
 @app.route("/api/rtsp/start", methods=["POST"])
+@admin_required
 def api_rtsp_start():
     d   = request.get_json(silent=True) or {}
     ok, info = ctrl.start_local_rtsp(
@@ -1288,12 +1429,14 @@ def api_rtsp_start():
 
 
 @app.route("/api/rtsp/stop", methods=["POST"])
+@admin_required
 def api_rtsp_stop():
     ok, msg = ctrl.stop_local_rtsp()
     return jsonify({"ok": ok, "msg": msg})
 
 
 @app.route("/api/relay/add", methods=["POST"])
+@admin_required
 def api_relay_add():
     d = request.get_json(silent=True) or {}
     url = (d.get("target_url") or "").strip()
@@ -1314,12 +1457,14 @@ def api_relay_add():
 
 
 @app.route("/api/relay/remove/<relay_id>", methods=["DELETE"])
+@admin_required
 def api_relay_remove(relay_id):
     ok, msg = ctrl.remove_relay(relay_id)
     return jsonify({"ok": ok, "msg": msg})
 
 
 @app.route("/api/snapshot", methods=["POST"])
+@admin_required
 def api_snapshot():
     d     = request.get_json(silent=True) or {}
     level = d.get("level", "mid")
@@ -1341,6 +1486,7 @@ def api_snapshot():
 
 
 @app.route("/api/zoom", methods=["POST"])
+@admin_required
 def api_zoom():
     d = request.get_json(silent=True) or {}
     try:
@@ -1351,6 +1497,7 @@ def api_zoom():
 
 
 @app.route("/api/focus", methods=["POST"])
+@admin_required
 def api_focus():
     d = request.get_json(silent=True) or {}
     mode = d.get("mode", "continuous")
@@ -1364,6 +1511,7 @@ def api_focus():
 
 
 @app.route("/api/transform", methods=["POST"])
+@admin_required
 def api_transform():
     d = request.get_json(silent=True) or {}
     flip   = d.get("flip")
@@ -1374,6 +1522,7 @@ def api_transform():
 
 
 @app.route("/api/camera", methods=["POST"])
+@admin_required
 def api_camera():
     d = request.get_json(silent=True) or {}
     try:
@@ -1384,6 +1533,7 @@ def api_camera():
 
 
 @app.route("/api/log/file")
+@login_required
 def api_log_file():
     try:
         with open(LOG_PATH, "r", encoding="utf-8") as f:
@@ -1396,6 +1546,7 @@ def api_log_file():
 
 
 @app.route("/api/log/clear", methods=["POST"])
+@admin_required
 def api_log_clear():
     try:
         open(LOG_PATH, "w").close()
@@ -1408,23 +1559,26 @@ def api_log_clear():
 
 
 @app.route("/api/hardware")
+@login_required
 def api_hardware():
     return jsonify(hw_monitor.get_stats() if hw_monitor else {})
 
 
 @app.route("/api/config/defaults")
+@login_required
 def api_config_defaults():
     import copy
     d = copy.deepcopy(CONFIG_DEFAULTS)
-    d.pop("saved_relays", None)   # never wipe relay list via reset
+    d.pop("saved_relays", None)
     return jsonify(d)
 
 
 @app.route("/api/config/reset", methods=["POST"])
+@admin_required
 def api_config_reset():
     import copy
     d = copy.deepcopy(CONFIG_DEFAULTS)
-    d["saved_relays"] = ctrl._config.get("saved_relays", [])   # preserve relays
+    d["saved_relays"] = ctrl._config.get("saved_relays", [])
     ctrl.save_config(d)
     ctrl._start_preview()
     cam_log.info("Config reset to defaults")
@@ -1432,6 +1586,7 @@ def api_config_reset():
 
 
 @app.route("/api/tunnel/start", methods=["POST"])
+@admin_required
 def api_tunnel_start():
     d        = request.get_json(silent=True) or {}
     provider = d.get("provider", "localhost.run")
@@ -1439,16 +1594,19 @@ def api_tunnel_start():
 
 
 @app.route("/api/tunnel/stop", methods=["POST"])
+@admin_required
 def api_tunnel_stop():
     return jsonify(tunnel_mgr.stop())
 
 
 @app.route("/api/tunnel/providers")
+@login_required
 def api_tunnel_providers():
     return jsonify({"providers": TunnelManager.available_providers()})
 
 
 @app.route("/snaps/<path:filename>")
+@login_required
 def serve_snap(filename):
     return send_from_directory(SNAP_DIR, filename)
 

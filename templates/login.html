@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Login · Arducam 64MP</title>
+<link rel="stylesheet" href="/static/css/app.css">
+</head>
+<body class="login-body">
+
+<div class="login-card">
+  <div class="login-logo">
+    <div class="login-logo-icon">&#9673;</div>
+    <h1>ARDUCAM 64MP</h1>
+    <span class="sub">WEB CONTROLLER</span>
+  </div>
+
+  <div class="login-form">
+    <div class="field-group">
+      <div class="lbl-sm">USERNAME</div>
+      <input type="text" id="login-user" placeholder="admin" autocomplete="username"
+             style="width:100%">
+    </div>
+    <div class="field-group" style="margin-top:12px">
+      <div class="lbl-sm">PASSWORD</div>
+      <input type="password" id="login-pass" placeholder="••••••" autocomplete="current-password"
+             style="width:100%">
+    </div>
+    <div id="login-error" class="login-error" style="display:none"></div>
+    <button class="btn btn-blue" id="btn-login" style="width:100%;margin-top:16px;padding:10px">
+      LOGIN
+    </button>
+  </div>
+
+  <div class="login-footer">
+    <span class="login-role-info">
+      <span class="user-role">ADMIN</span> full control &nbsp;·&nbsp;
+      <span class="user-role role-user">USER</span> view only
+    </span>
+  </div>
+</div>
+
+<script>
+'use strict';
+const btnLogin = document.getElementById('btn-login');
+const errDiv   = document.getElementById('login-error');
+
+function showError(msg) {
+  errDiv.textContent    = msg;
+  errDiv.style.display  = 'block';
+}
+
+async function doLogin() {
+  const username = document.getElementById('login-user').value.trim();
+  const password = document.getElementById('login-pass').value;
+  if (!username || !password) {
+    showError('Enter username and password.');
+    return;
+  }
+  btnLogin.disabled     = true;
+  btnLogin.textContent  = 'LOGGING IN…';
+  errDiv.style.display  = 'none';
+  try {
+    const r = await fetch('/api/auth/login', {
+      method:  'POST',
+      headers: {'Content-Type': 'application/json'},
+      body:    JSON.stringify({username, password}),
+    });
+    const d = await r.json();
+    if (d.ok) {
+      window.location.href = '/';
+    } else {
+      showError(d.error || 'Invalid credentials');
+      btnLogin.disabled    = false;
+      btnLogin.textContent = 'LOGIN';
+    }
+  } catch (e) {
+    showError('Connection error — try again.');
+    btnLogin.disabled    = false;
+    btnLogin.textContent = 'LOGIN';
+  }
+}
+
+btnLogin.addEventListener('click', doLogin);
+document.addEventListener('keydown', e => {
+  if (e.key === 'Enter') doLogin();
+});
+document.getElementById('login-user').focus();
+</script>
+</body>
+</html>
